@@ -5,15 +5,18 @@ from datetime import datetime
 
 api_key = "&api_token=eA4Mbxm4D6Tvosi8b9uvwqhjZOTdybn4e0451sMc"
 ticker="NVDA"
-tickers = f"&symbols={ticker}"
-other_config = "&filter_entities=true&language=en"
-time_from = "&published_after=2023-05-01T00:00:00"
-time_to = "&published_before=2026-05-01T00:00:00"
-sort = "&sort=published_at"
-sort_order = "&sort_order=desc"
-limit = "&limit=1000"
-url = "https://api.marketaux.com/v1/news/all?"+api_key+other_config+tickers+time_from+time_to+sort+sort_order+limit
-responses = requests.get(url)
+url = "https://api.marketaux.com/v1/news/all"
+params = {
+    "api_token": api_key,
+    "symbols": ticker,
+    "language": "en",
+    "published_after": "2023-05-01T00:00:00",
+    "published_before": "2026-05-01T00:00:00",
+    "sort": "published_at",
+    "sort_order": "desc",
+    "limit": 1000
+}
+responses = requests.get(url, params=params)
 data = responses.json()
 print(f"Metadata: {data.get('meta')}\n")
 
@@ -42,12 +45,12 @@ for article in articles:
 
 print(f"Total articles retrieved: {data.get('meta').get('returned')}")
 
-csv_file = "../data/marketaux_nvda_news.csv"
+csv_file = f"../data/marketaux_{ticker.lower()}_news.csv"
 df = pd.DataFrame(rows)
 if os.path.exists(csv_file):
     existing_df = pd.read_csv(csv_file, parse_dates=["pub_time"])
     combined_df = pd.concat([existing_df, df])
-    combined_df.drop_duplicates(subset=["pub_time", "title"], inplace=True)
+    combined_df.drop_duplicates(subset=["pub_time", "ticker", "title"], inplace=True)
     combined_df.sort_values(by="pub_time", ascending=True, inplace=True)
     combined_df.to_csv(csv_file, index=False)
 else:

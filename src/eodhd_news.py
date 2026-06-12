@@ -7,7 +7,7 @@ api_key = "&apikey=4NH3GXMDDOMJKK6U"
 ticker="NVDA"
 tickers = f"&tickers={ticker}"
 time_from = "&time_from=20230501T0000"
-time_to = "&time_to=20260501T0000"
+time_to = "&time_to=20230503T1430"
 sort = "&sort=LATEST"
 limit = "&limit=1000"
 url = "https://www.alphavantage.co/query?function=NEWS_SENTIMENT"+api_key+tickers+time_from+time_to+sort+limit
