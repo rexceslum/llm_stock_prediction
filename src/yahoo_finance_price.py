@@ -9,7 +9,7 @@ end_date = date(2026, 4, 30)
 buffer_end_date = date(2026, 5, 2)
 start_date = date(2023, 5, 1)
 buffer_start_date = date(2022, 5, 1)
-ticker_symbol = "MSFT"
+ticker_symbol = "NDAQ"
 
 # Option A: Retrieve by start end date
 data = yf.download(ticker_symbol, start=buffer_start_date, end=buffer_end_date, auto_adjust=True)
@@ -52,8 +52,9 @@ data = pd.concat([data, macd_df, bbands_df, stoch_df], axis=1)
 data["Target_Forward_Return"] = data["Daily_Return_Pct"].shift(-1)  # Target variable regression
 data["Target_Direction"] = (data["Target_Forward_Return"] > 0).astype(int)  # Target variable classification
 
-# Cuts off the 2022 buffer data, starting exactly on 2023-05-01
+# Cuts off the 2022 buffer data, starting exactly on 2023-05-01, add ticker column
 data = data.loc[pd.Timestamp(start_date) : pd.Timestamp(end_date)]
+data.insert(1, "ticker", ticker_symbol)
 
 # Saves everything including dates, prices, and technical markers
 output_filename = f"../data/yf_{ticker_symbol.lower()}_market_data.csv"

@@ -3,36 +3,33 @@ import pandas as pd
 import os
 from datetime import datetime
 
-api_key = "&apikey=4NH3GXMDDOMJKK6U"
+api_key = "6a242c8a06a730.47874144"
 ticker="NVDA"
-tickers = f"&tickers={ticker}"
-time_from = "&time_from=20230501T0000"
-time_to = "&time_to=20230503T1430"
-sort = "&sort=LATEST"
-limit = "&limit=1000"
-url = "https://www.alphavantage.co/query?function=NEWS_SENTIMENT"+api_key+tickers+time_from+time_to+sort+limit
-responses = requests.get(url)
+url = "https://eodhd.com/api/news"
+params = {
+    "api_token": api_key,
+    "s": ticker+".US",
+    "from": "2023-05-01",
+    "to": "2026-04-30",
+    "limit": 1000,
+    "fmt": "json",
+}
+responses = requests.get(url, params=params)
 data = responses.json()
-print(f"Sentiment score definition: {data.get('sentiment_score_definition')}")
-print(f"Relevance score definition: {data.get('relevance_score_definition')}\n")
+print(data)
 
 rows = []
-articles = data.get("feed", [])
-for article in articles:
+for article in data:
     title = article.get("title", "")
-    pub_time = datetime.strptime(article.get("time_published", ""), "%Y%m%dT%H%M%S")
-    summary = article.get("summary", "")
-    topics = article.get("topics", "")
-    ticker_sentiment = article.get("ticker_sentiment", "")
-    sentiment_score = article.get("overall_sentiment_score", "")
-    sentiment_label = article.get("overall_sentiment_label", "")
+    pub_time = datetime.strptime(article.get("date", ""), "%Y-%m-%dT%H:%M:%S%z")
+    summary = article.get("content", "")
+    topics = article.get("tags", [])
+    sentiment_score = article.get("sentiment").get("polarity", "")
     print(f"Title: {title}")
     print(f"Pub Time: {pub_time}")
     print(f"Summary: {summary}")
     print(f"Topics: {topics}")
-    print(f"Ticker Sentiment: {ticker_sentiment}")
-    print(f"Sentiment score: {sentiment_score}")
-    print(f"Sentiment label: {sentiment_label}\n")
+    print(f"Sentiment score: {article.get('sentiment')}")
 
     rows.append({
         "pub_time": pub_time,
@@ -42,9 +39,9 @@ for article in articles:
         "sentiment_score": sentiment_score
     })
 
-print(f"Total articles: {data.get('items')}")
+print(f"Total articles: {len(rows)}")
 
-csv_file = f"../data/alpha_{ticker.lower()}_news.csv"
+csv_file = f"../data/eodhd_{ticker.lower()}_news.csv"
 df = pd.DataFrame(rows)
 if os.path.exists(csv_file):
     existing_df = pd.read_csv(csv_file, parse_dates=["pub_time"])

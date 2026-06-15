@@ -3,22 +3,24 @@ import pandas as pd
 import os
 from datetime import datetime
 
-api_key = "&api_token=eA4Mbxm4D6Tvosi8b9uvwqhjZOTdybn4e0451sMc"
+api_key = "eA4Mbxm4D6Tvosi8b9uvwqhjZOTdybn4e0451sMc"
 ticker="NVDA"
 url = "https://api.marketaux.com/v1/news/all"
 params = {
     "api_token": api_key,
     "symbols": ticker,
     "language": "en",
-    "published_after": "2023-05-01T00:00:00",
-    "published_before": "2026-05-01T00:00:00",
+    "filter_entities": "true",
+    "published_after": "2023-07-16T00:00:00",
+    "published_before": "2023-07-17T00:00:00",
     "sort": "published_at",
     "sort_order": "desc",
-    "limit": 1000
+    "limit": 1000,
+    "page": 3,
 }
 responses = requests.get(url, params=params)
 data = responses.json()
-print(f"Metadata: {data.get('meta')}\n")
+print(data)
 
 rows = []
 articles = data.get("data", [])
@@ -27,8 +29,9 @@ for article in articles:
     pub_time = datetime.strptime(article.get("published_at", ""), "%Y-%m-%dT%H:%M:%S.%fZ")
     summary = article.get("description", "")
     relevance_score = article.get("relevance_score", "")
-    match_score = article.get("match_score", "")
-    sentiment_score = article.get("entities", []).get("sentiment_score")
+    entities = article.get("entities", [])
+    match_score = entities[0].get("match_score", "")
+    sentiment_score = entities[0].get("sentiment_score", "")
     print(f"Title: {title}")
     print(f"Pub Time: {pub_time}")
     print(f"Summary: {summary}")
@@ -38,11 +41,13 @@ for article in articles:
 
     rows.append({
         "pub_time": pub_time,
+        "ticker": ticker,
         "title": title,
         "summary": summary,
         "sentiment_score": sentiment_score
     })
 
+print(f"Total articles found: {data.get('meta').get('found')}")
 print(f"Total articles retrieved: {data.get('meta').get('returned')}")
 
 csv_file = f"../data/marketaux_{ticker.lower()}_news.csv"
