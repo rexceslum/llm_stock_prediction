@@ -195,8 +195,8 @@ yf_nvda_market_data = "../data/yf_nvda_market_data.csv"
 # merge_news_csv(files, merged_news)
 # find_missing_dates(merged_news, "2023-05-01","2026-04-30")
 
-clean_news(merged_news)
-find_missing_dates(clean_merged_news, "2023-05-01","2026-04-30")
+# clean_news(merged_news)
+# find_missing_dates(clean_merged_news, "2023-05-01","2026-04-30")
 
 # add_column(yf_msft_market_data, "ticker", "MSFT")
 
