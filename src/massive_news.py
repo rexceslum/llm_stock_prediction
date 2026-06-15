@@ -4,23 +4,25 @@ from datetime import datetime
 from massive import RESTClient
 
 client = RESTClient("gJJ78yonpeHHCdVLv_kkNvqkzxk5etNx")
-ticker = "NVDA"
+ticker = "AMZN"
 mapping = {
     "very positive": 1,
+    "bullish": 1,
     "positive": 0.8,
     "neutral/positive": 0.3,
     "neutral": 0,
     "mixed": 0,
     "hold": 0,
     "neutral/negative": -0.3,
-    "negative": -1
+    "negative": -1,
+    "bearish": -1
 }
 
 news = []
 for n in client.list_ticker_news(
-        ticker="NVDA",
-        published_utc_gte="2023-05-01T00:00:00Z",
-        published_utc_lt="2024-01-01T00:00:00Z",
+        ticker=ticker,
+        published_utc_gte="2026-01-01T00:00:00Z",
+        published_utc_lt="2026-05-01T00:00:00Z",
         # published_utc="2024-05-01T08:00:00Z",
         order="desc",
         limit=1000,

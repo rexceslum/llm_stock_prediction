@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 
 api_key = "&apikey=4NH3GXMDDOMJKK6U"
-ticker="NVDA"
+ticker="AMZN"
 tickers = f"&tickers={ticker}"
 time_from = "&time_from=20230501T0000"
 time_to = "&time_to=20260501T0000"
