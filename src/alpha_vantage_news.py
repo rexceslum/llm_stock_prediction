@@ -3,11 +3,12 @@ import pandas as pd
 import os
 from datetime import datetime
 
-api_key = "&apikey=4NH3GXMDDOMJKK6U"
-ticker="AMZN"
+# api_key = "&apikey=4NH3GXMDDOMJKK6U"
+api_key = "&apikey=89Y6O2Y8O8X77DCD"
+ticker="MSFT"
 tickers = f"&tickers={ticker}"
 time_from = "&time_from=20230501T0000"
-time_to = "&time_to=20260501T0000"
+time_to = f"&time_to={datetime.strptime('2026-05-01 00:00', '%Y-%m-%d %H:%M').strftime('%Y%m%dT%H%M')}"
 sort = "&sort=LATEST"
 limit = "&limit=1000"
 url = "https://www.alphavantage.co/query?function=NEWS_SENTIMENT"+api_key+tickers+time_from+time_to+sort+limit

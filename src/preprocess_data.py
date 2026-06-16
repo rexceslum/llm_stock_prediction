@@ -1,10 +1,11 @@
 import pandas as pd
 import os
 import re
-from thefuzz import fuzz
+# from thefuzz import fuzz
 from tqdm import tqdm
 from sqlalchemy import create_engine
 from datetime import datetime
+
 
 def chop_by_period(csv_file, start_date, end_date):
     data = pd.read_csv(csv_file, parse_dates=["pub_time"])
@@ -123,33 +124,33 @@ def clean_news(csv_file):
     print("Final total rows: ", len(df_cleaned))
     print("Saved to CSV")
 
-def remove_fuzzy_duplicate(csv_file):
-    df = pd.read_csv(csv_file, parse_dates=["pub_time"])
-    df["title_lower"] = df["title"].str.lower()
-
-    # Fuzzy match to find and filter similar strings (threshold set to 90/100)
-    unique_texts = df["title_lower"].unique()
-    rows_to_keep = []
-    for text in tqdm(
-        unique_texts,
-        total=len(unique_texts),
-        desc="Removing similar titles",
-        unit="title",
-    ):
-        if not rows_to_keep:
-            rows_to_keep.append(text)
-        else:
-            # Check against already kept texts
-            is_similar = False
-            for kept_text in rows_to_keep:
-                if fuzz.ratio(text, kept_text) >= 90:
-                    is_similar = True
-                    break
-            if not is_similar:
-                rows_to_keep.append(text)
-
-    df_cleaned = df[df["title_lower"].isin(rows_to_keep)]
-    return df_cleaned
+# def remove_fuzzy_duplicate(csv_file):
+#     df = pd.read_csv(csv_file, parse_dates=["pub_time"])
+#     df["title_lower"] = df["title"].str.lower()
+#
+#     # Fuzzy match to find and filter similar strings (threshold set to 90/100)
+#     unique_texts = df["title_lower"].unique()
+#     rows_to_keep = []
+#     for text in tqdm(
+#         unique_texts,
+#         total=len(unique_texts),
+#         desc="Removing similar titles",
+#         unit="title",
+#     ):
+#         if not rows_to_keep:
+#             rows_to_keep.append(text)
+#         else:
+#             # Check against already kept texts
+#             is_similar = False
+#             for kept_text in rows_to_keep:
+#                 if fuzz.ratio(text, kept_text) >= 90:
+#                     is_similar = True
+#                     break
+#             if not is_similar:
+#                 rows_to_keep.append(text)
+#
+#     df_cleaned = df[df["title_lower"].isin(rows_to_keep)]
+#     return df_cleaned
 
 def save_to_db(csv_file, table_name, mode="append"):
     engine = create_engine(
@@ -167,11 +168,12 @@ def save_to_db(csv_file, table_name, mode="append"):
 
 
 
-ticker = "amzn"
+ticker = "msft"
 alpha_news = f"../data/alpha_{ticker}_news.csv"
 finnhub_news = f"../data/finnhub_{ticker}_news.csv"
 massive_news = f"../data/massive_{ticker}_news.csv"
 marketaux_news = f"../data/marketaux_{ticker}_news.csv"
+eodhd_news = f"../data/eodhd_{ticker}_news.csv"
 merged_news = f"../data/merged_{ticker}_news.csv"
 clean_merged_news = f"../data/cleaned_merged_{ticker}_news.csv"
 
@@ -191,7 +193,7 @@ yf_nvda_market_data = "../data/yf_nvda_market_data.csv"
 # print(f"\nProcessing file: {massive_news}")
 # find_missing_dates(massive_news, "2023-05-01","2026-04-30")
 
-# files = [alpha_news, massive_news]
+# files = [alpha_news, massive_news, marketaux_news, eodhd_news]
 # merge_news_csv(files, merged_news)
 # find_missing_dates(merged_news, "2023-05-01","2026-04-30")
 

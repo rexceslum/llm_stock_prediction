@@ -4,8 +4,9 @@ import os
 import math
 from datetime import datetime
 
-api_key = "eA4Mbxm4D6Tvosi8b9uvwqhjZOTdybn4e0451sMc"
-ticker="AMZN"
+# api_key = "eA4Mbxm4D6Tvosi8b9uvwqhjZOTdybn4e0451sMc"
+api_key = "2L38mVttLE8cESKciOGlbgG58ToarfKznlVBrXlp"
+ticker="MSFT"
 page = 1
 total_pages = 1
 url = "https://api.marketaux.com/v1/news/all"
@@ -14,8 +15,8 @@ params = {
     "symbols": ticker,
     "language": "en",
     "filter_entities": "true",
-    "published_after": "2023-11-12T00:00:00",
-    "published_before": "2023-11-13T00:00:00",
+    "published_after": "2023-06-25T00:00:00",
+    "published_before": "2023-06-26T00:00:00",
     "sort": "published_at",
     "sort_order": "desc",
     "limit": 1000,

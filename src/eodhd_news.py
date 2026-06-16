@@ -4,13 +4,13 @@ import os
 from datetime import datetime
 
 api_key = "6a242c8a06a730.47874144"
-ticker="NVDA"
+ticker="MSFT"
 url = "https://eodhd.com/api/news"
 params = {
     "api_token": api_key,
     "s": ticker+".US",
-    "from": "2023-05-01",
-    "to": "2026-04-30",
+    "from": "2024-07-28",
+    "to": "2024-07-29",
     "limit": 1000,
     "fmt": "json",
 }
@@ -21,7 +21,7 @@ print(data)
 rows = []
 for article in data:
     title = article.get("title", "")
-    pub_time = datetime.strptime(article.get("date", ""), "%Y-%m-%dT%H:%M:%S%z")
+    pub_time = datetime.strptime(article.get("date", ""), "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=None)
     summary = article.get("content", "")
     topics = article.get("tags", [])
     sentiment_score = article.get("sentiment").get("polarity", "")
@@ -48,8 +48,10 @@ if os.path.exists(csv_file):
     combined_df = pd.concat([existing_df, df])
     combined_df.drop_duplicates(subset=["pub_time", "ticker", "title"], inplace=True)
     combined_df.sort_values(by="pub_time", ascending=True, inplace=True)
+    combined_df["pub_time"] = combined_df["pub_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
     combined_df.to_csv(csv_file, index=False)
 else:
     df.sort_values(by="pub_time", ascending=True, inplace=True)
+    df["pub_time"] = df["pub_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
     df.to_csv(csv_file, index=False)
 print(f"Saved articles to csv")

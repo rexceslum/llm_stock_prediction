@@ -158,9 +158,9 @@ def process_news_csv(
     print(f"Saved {len(result):,} rows to: {output_path}")
 
 
-ticker = "nvda"
+ticker = "msft"
 process_news_csv(
     input_path=f"../data/cleaned_merged_{ticker}_news.csv",
-    output_path=f"../data/final_{ticker}_news_sentiment.csv",
+    output_path=f"../data/finbert_{ticker}_news_sentiment.csv",
     batch_size=32
 )

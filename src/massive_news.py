@@ -4,7 +4,6 @@ from datetime import datetime
 from massive import RESTClient
 
 client = RESTClient("gJJ78yonpeHHCdVLv_kkNvqkzxk5etNx")
-ticker = "AMZN"
 mapping = {
     "very positive": 1,
     "bullish": 1,
@@ -17,6 +16,7 @@ mapping = {
     "negative": -1,
     "bearish": -1
 }
+ticker = "MSFT"
 
 news = []
 for n in client.list_ticker_news(
