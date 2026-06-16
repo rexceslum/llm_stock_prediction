@@ -17,9 +17,9 @@ def chop_by_period(csv_file, start_date, end_date):
     data.to_csv(csv_file, index=False)
     print(f"Remaining rows: {len(data)}")
 
-def find_missing_dates(csv_file, start_date, end_date):
-    data = pd.read_csv(csv_file, parse_dates=["pub_time"])
-    existing_dates = set(data["pub_time"].dt.date)
+def find_missing_dates(csv_file, date_col, start_date, end_date):
+    data = pd.read_csv(csv_file, parse_dates=[date_col])
+    existing_dates = set(data[date_col].dt.date)
     all_dates = pd.date_range(start=start_date, end=end_date, freq="D").date
     missing_dates = sorted(set(all_dates) - existing_dates)
 
@@ -124,6 +124,41 @@ def clean_news(csv_file):
     print("Final total rows: ", len(df_cleaned))
     print("Saved to CSV")
 
+def group_news_by_date(input, output):
+    df = pd.read_csv(input, parse_dates=["pub_time"])
+
+    df["Date"] = df["pub_time"].dt.date
+    excluded_columns = {
+        "pub_time",
+        "title",
+        "summary",
+        "news_text",
+        "finbert_label",
+        "sentiment_score",
+    }
+    numerical_columns = [
+        column
+        for column in df.select_dtypes(include="number").columns
+        if column not in excluded_columns
+    ]
+
+    aggregated_df = (
+        df.groupby(["Date", "ticker"], as_index=False)
+        .agg(
+            **{
+                column: (column, "mean")
+                for column in numerical_columns
+            },
+            news_count=("ticker", "size"),
+        )
+        .sort_values(["Date", "ticker"])
+        .reset_index(drop=True)
+    )
+    aggregated_df.to_csv(output, index=False)
+    print("Total rows: ", len(aggregated_df))
+    print("Saved to CSV")
+
+
 # def remove_fuzzy_duplicate(csv_file):
 #     df = pd.read_csv(csv_file, parse_dates=["pub_time"])
 #     df["title_lower"] = df["title"].str.lower()
@@ -168,7 +203,7 @@ def save_to_db(csv_file, table_name, mode="append"):
 
 
 
-ticker = "msft"
+ticker = "nvda"
 alpha_news = f"../data/alpha_{ticker}_news.csv"
 finnhub_news = f"../data/finnhub_{ticker}_news.csv"
 massive_news = f"../data/massive_{ticker}_news.csv"
@@ -176,6 +211,8 @@ marketaux_news = f"../data/marketaux_{ticker}_news.csv"
 eodhd_news = f"../data/eodhd_{ticker}_news.csv"
 merged_news = f"../data/merged_{ticker}_news.csv"
 clean_merged_news = f"../data/cleaned_merged_{ticker}_news.csv"
+finbert_news = f"../data/finbert_{ticker}_news_sentiment.csv"
+final_news = f"../data/final_{ticker}_news_sentiment.csv"
 
 yf_aapl_market_data = "../data/yf_aapl_market_data.csv"
 yf_amzn_market_data = "../data/yf_amzn_market_data.csv"
@@ -187,19 +224,22 @@ yf_nvda_market_data = "../data/yf_nvda_market_data.csv"
 # chop_by_period("../data/finnhub_nvda_news.csv", "2023-05-01","2026-04-30")
 
 # print(f"Processing file: {alpha_news}")
-# find_missing_dates(alpha_news, "2023-05-01","2026-04-30")
+# find_missing_dates(alpha_news, "pub_time", "2023-05-01","2026-04-30")
 # print(f"\nProcessing file: {finnhub_news}")
-# find_missing_dates(finnhub_news, "2023-05-01","2026-04-30")
+# find_missing_dates(finnhub_news, "pub_time", "2023-05-01","2026-04-30")
 # print(f"\nProcessing file: {massive_news}")
-# find_missing_dates(massive_news, "2023-05-01","2026-04-30")
+# find_missing_dates(massive_news, "pub_time", "2023-05-01","2026-04-30")
 
 # files = [alpha_news, massive_news, marketaux_news, eodhd_news]
 # merge_news_csv(files, merged_news)
-# find_missing_dates(merged_news, "2023-05-01","2026-04-30")
+# find_missing_dates(merged_news, "pub_time", "2023-05-01","2026-04-30")
 
 # clean_news(merged_news)
-# find_missing_dates(clean_merged_news, "2023-05-01","2026-04-30")
+# find_missing_dates(clean_merged_news, "pub_time", "2023-05-01","2026-04-30")
 
 # add_column(yf_msft_market_data, "ticker", "MSFT")
 
 # save_to_db(yf_nvda_market_data, "tbl_stock_market_data", "append")
+
+# group_news_by_date(finbert_news, final_news)
+# find_missing_dates(final_news, "Date", "2023-05-01","2026-04-30")
