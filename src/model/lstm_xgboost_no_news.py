@@ -177,10 +177,10 @@ print("\n=== PHASE 3: Training the XGBoost Meta-Model ===")
 # Train the XGBoost model on the combined feature set
 xgb_model = xgb.XGBRegressor(
     n_estimators=500,
-    learning_rate=0.04,
-    max_depth=6,
+    learning_rate=0.03,
+    max_depth=4,
     subsample=0.8,
-    colsample_bytree=0.6,
+    colsample_bytree=0.5,
     random_state=42,
     eval_metric=['rmse', 'mae'],
     early_stopping_rounds=20

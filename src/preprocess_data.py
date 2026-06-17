@@ -115,7 +115,8 @@ def clean_news(csv_file):
     # Remove duplicates and drop temp columns
     df_cleaned["title_lower"] = df_cleaned["title"].str.lower()
     df_cleaned = df_cleaned.drop_duplicates(subset=["pub_date", "title_lower"], keep="first")
-    df_cleaned = df_cleaned.drop(columns=["pub_date", "title_lower"])
+    df_cleaned = df_cleaned.drop(columns=["pub_date", "title_lower", "sentiment_score"])
+    df_cleaned["news_text"] = df_cleaned["title"].str.cat(df_cleaned["summary"].fillna(""), sep=". ").str.rstrip('.')
 
     # Append prefix on filename and save as new csv
     directory, filename = os.path.split(csv_file)
@@ -212,6 +213,7 @@ eodhd_news = f"../data/eodhd_{ticker}_news.csv"
 merged_news = f"../data/merged_{ticker}_news.csv"
 clean_merged_news = f"../data/cleaned_merged_{ticker}_news.csv"
 finbert_news = f"../data/finbert_{ticker}_news_sentiment.csv"
+llm_news = f"../data/llm_{ticker}_news_sentiment.csv"
 final_news = f"../data/final_{ticker}_news_sentiment.csv"
 
 yf_aapl_market_data = "../data/yf_aapl_market_data.csv"
@@ -243,3 +245,6 @@ yf_nvda_market_data = "../data/yf_nvda_market_data.csv"
 
 # group_news_by_date(finbert_news, final_news)
 # find_missing_dates(final_news, "Date", "2023-05-01","2026-04-30")
+
+# df = pd.read_csv(clean_merged_news)
+# print(df["ticker"].unique())
