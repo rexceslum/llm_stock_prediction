@@ -6,9 +6,13 @@ import os
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
+# Increase timeout to 300 seconds (5 minutes) instead of the default 10 seconds
+os.environ['HF_HUB_DOWNLOAD_TIMEOUT'] = "300"
+
 # 1. Configuration & File Paths
-INPUT_CSV = "your_input_data.csv"
-OUTPUT_CSV = "news_sentiment_results.csv"
+TICKER = "NVDA"
+INPUT_CSV = f"../data/cleaned_merged_{TICKER.lower()}_news.csv"
+OUTPUT_CSV = f"../data/llm_{TICKER.lower()}_news_sentiment.csv"
 CHECKPOINT_DIR = "checkpoints/"
 MODEL_ID = "Rexceslum/Llama-3.2-3B-Finance"
 
@@ -31,42 +35,73 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 
 # 3. The Prompt Strategy
-system_prompt = """You are a highly accurate financial sentiment analysis AI. 
-Analyze the provided financial news text and output the results STRICTLY as a JSON object. 
-Do not include any markdown, conversational text, or explanations. 
+system_prompt = f"""You are a highly accurate financial sentiment analysis AI. 
+Analyze the provided financial news text from the perspective of {TICKER} stock. Respond STRICTLY with a JSON object. 
+Do not include any other text. 
 Use this exact structure:
-{
-  "llm_positive": <float 0.0-1.0>,
-  "llm_negative": <float 0.0-1.0>,
-  "llm_neutral": <float 0.0-1.0>,
+{{
   "llm_label": "<string: positive, negative, or neutral>",
-  "llm_confidence": <float 0.0-1.0>,
-  "llm_score": <float -1.0 to 1.0>,
-  "llm_relevance": <float 0.0-1.0>,
-  "llm_impact_magnitude": <float 0.0-1.0>,
-  "llm_uncertainty": <float 0.0-1.0>
-}"""
+  "llm_score": <integer from -5 (very negative) to 5 (very positive)>,
+  "llm_confidence": <integer from 1 (unsure) to 10 (highly confident)>
+}}"""
 
 
 # Robust JSON extraction to handle LLMs that occasionally hallucinate markdown
 def extract_json(text):
+    # Default fallback if the LLM completely fails
+    data = {
+        "llm_label": "error", "llm_score": 0, "llm_confidence": 0
+    }
+
     try:
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
-            return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        pass
-    # Fallback structure if parsing completely fails
+            parsed = json.loads(match.group(0))
+            # Merge parsed data into our default dictionary
+            data.update(parsed)
+    except Exception:
+        pass  # If parsing fails, we stick with the default 'error' data
+
+    # 1. Normalize the core metrics back to your desired float scales
+    label = str(data.get("llm_label", "neutral")).lower().strip()
+    raw_score = float(data.get("llm_score", 0))  # Expected -5 to 5
+    raw_conf = float(data.get("llm_confidence", 5))  # Expected 1 to 10
+
+    # Scale score to -1.0 to 1.0
+    normalized_score = round(max(min(raw_score / 5.0, 1.0), -1.0), 2)
+
+    # Scale confidence to 0.0 to 1.0
+    normalized_conf = round(max(min(raw_conf / 10.0, 1.0), 0.0), 2)
+
+    # 2. Mathematically derive the positive/negative/neutral probabilities based on the score
+    pos_prob = 0.0
+    neg_prob = 0.0
+    neu_prob = 0.0
+
+    if normalized_score > 0.2:
+        pos_prob = abs(normalized_score)
+        neu_prob = round(1.0 - pos_prob, 2)
+    elif normalized_score < -0.2:
+        neg_prob = abs(normalized_score)
+        neu_prob = round(1.0 - neg_prob, 2)
+    else:
+        neu_prob = 1.0 - abs(normalized_score)
+
+    # 3. Build the final 9-metric dictionary you originally wanted
     return {
-        "llm_positive": None, "llm_negative": None, "llm_neutral": None,
-        "llm_label": "error", "llm_confidence": None, "llm_score": None,
-        "llm_relevance": None, "llm_impact_magnitude": None, "llm_uncertainty": None,
-        "raw_error_output": text  # Keep the raw text to debug later
+        "llm_positive": round(pos_prob, 2),
+        "llm_negative": round(neg_prob, 2),
+        "llm_neutral": round(neu_prob, 2),
+        "llm_label": label if label in ['positive', 'negative', 'neutral'] else "neutral",
+        "llm_confidence": normalized_conf,
+        "llm_score": normalized_score,
+        "llm_relevance": 0.9,  # Hardcoded: if it contains the ticker, it's highly relevant
+        "llm_impact_magnitude": round(abs(normalized_score), 2),  # Impact is the absolute value of the score
+        "llm_uncertainty": round(1.0 - normalized_conf, 2)  # Uncertainty is the inverse of confidence
     }
 
-
 # 4. Load Data
-df = pd.read_csv(INPUT_CSV)
+df = pd.read_csv(INPUT_CSV).head(10)
 results = []
 
 print(f"Starting inference on {len(df)} rows...")
@@ -85,24 +120,29 @@ for index, row in tqdm(df.iterrows(), total=len(df)):
         {"role": "user", "content": news_text}
     ]
 
-    inputs = tokenizer.apply_chat_template(
+    # Get the formatted string first (tokenize=False)
+    prompt = tokenizer.apply_chat_template(
         messages,
-        return_tensors="pt",
+        tokenize=False,
         add_generation_prompt=True
-    ).to("cuda")
+    )
+
+    # Tokenize explicitly into a dictionary
+    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
 
     # Generate output
     with torch.no_grad():
         outputs = model.generate(
-            inputs,
+            **inputs,
             max_new_tokens=150,  # Keep short to save time; JSON is brief
-            temperature=0.1,  # Low temp for deterministic, consistent JSON
+            temperature=0.3,  # Low temp for deterministic, consistent JSON
             do_sample=True,
             pad_token_id=tokenizer.eos_token_id
         )
 
-    # Decode only the generated portion
-    response = tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
+    # Slice the output using the input_ids length explicitly
+    input_length = inputs["input_ids"].shape[1]
+    response = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
 
     # Parse and merge with original row data
     parsed_json = extract_json(response)
