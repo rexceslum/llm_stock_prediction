@@ -4,6 +4,9 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 import xgboost as xgb
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, LSTM, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
@@ -156,3 +159,67 @@ for i in range(5):
     actual_pct = y_test_final[i] * 100
     pred_pct = y_pred[i] * 100
     print(f"Day {i+1}: Actual: {actual_pct:+.2f}%  |  Predicted: {pred_pct:+.2f}%")
+
+print("\n=== PHASE 5: Plotting Results ===")
+
+# 1. Generate predictions for the training data
+y_train_pred = xgb_model.predict(X_train_2D)
+
+# 2. Extract corresponding dates for the plotted sequences
+# Convert index to datetime objects for clean x-axis formatting
+dates = pd.to_datetime(df_clean.index)
+
+# Train dates align with y_train_final: from 'lookback_days' up to the 'split_index'
+train_dates = dates[lookback_days:split_index]
+
+# Test dates align with y_test_final: from 'split_index + lookback_days' to the end
+test_dates = dates[split_index + lookback_days:]
+
+# 3. Create the plot
+plt.figure(figsize=(16, 8))
+
+# Plot Training Data (Actual vs Predicted)
+plt.plot(train_dates, y_train_final, label='Train Actual', color='steelblue', alpha=0.7)
+plt.plot(train_dates, y_train_pred, label='Train Predicted', color='orange', alpha=0.7, linestyle='--')
+
+# Plot Testing Data (Actual vs Predicted)
+plt.plot(test_dates, y_test_final, label='Test Actual', color='darkgreen', alpha=0.7)
+plt.plot(test_dates, y_pred, label='Test Predicted', color='magenta', alpha=0.7, linestyle='--')
+
+# Draw a vertical dashed line at the exact split point
+plt.axvline(x=test_dates[0], color='red', linestyle=':', label='Train/Test Split')
+
+# 4. Annotate Metrics
+# Build the text box containing the evaluated metrics
+metrics_text = (
+    f"Test Data Metrics:\n"
+    f"RMSE: {rmse:.4f}\n"
+    f"MAE: {mae:.4f}\n"
+    f"$R^2$: {r2:.4f}"
+)
+
+# Properties for the text box styling
+props = dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9, edgecolor='gray')
+
+# Place text box in the top-left corner (axes coordinates: 0.02, 0.96)
+plt.gca().text(0.02, 0.96, metrics_text, transform=plt.gca().transAxes,
+               fontsize=12, verticalalignment='top', bbox=props)
+
+# 5. Format the Graph
+plt.title('NVDA Ground Truth vs Predicted 5-Day Forward Returns', fontsize=16, fontweight='bold')
+plt.xlabel('Date', fontsize=12)
+plt.ylabel('Cumulative Return', fontsize=12)
+
+# Improve x-axis date formatting
+plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+plt.gca().xaxis.set_major_locator(mdates.AutoDateLocator())
+plt.gcf().autofmt_xdate()
+
+# Display legend and grid
+plt.legend(loc='upper right', fontsize=10)
+plt.grid(True, linestyle='--', alpha=0.5)
+plt.tight_layout()
+
+# Show the plot
+plt.savefig(f"../../output/xgboost_prediction_graph_{datetime.now().strftime('%Y%m%dT%H%M%S')}.png")
+plt.close()

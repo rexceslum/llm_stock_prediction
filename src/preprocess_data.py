@@ -159,6 +159,34 @@ def group_news_by_date(input, output):
     print("Total rows: ", len(aggregated_df))
     print("Saved to CSV")
 
+def group_llm_news_by_date(input, output):
+    df = pd.read_csv(input, parse_dates=["pub_time"])
+    df["Date"] = df["pub_time"].dt.date
+    excluded_columns = {
+        "pub_time",
+        "title",
+        "summary",
+        "news_text",
+        "llm_label",
+        "llm_error",
+    }
+    numerical_columns = [
+        column
+        for column in df.select_dtypes(include="number").columns
+        if column not in excluded_columns
+    ]
+    aggregated_df = (
+        df.groupby(["Date", "ticker"], as_index=False)
+        .agg(
+            **{
+                column: (column, "mean")
+                for column in numerical_columns
+            },
+            news_count=("ticker", "size"),
+        )
+        .sort_values(["Date", "ticker"])
+        .reset_index(drop=True)
+    )
 
 # def remove_fuzzy_duplicate(csv_file):
 #     df = pd.read_csv(csv_file, parse_dates=["pub_time"])
@@ -248,3 +276,6 @@ yf_nvda_market_data = "../data/yf_nvda_market_data.csv"
 
 # df = pd.read_csv(clean_merged_news)
 # print(df["ticker"].unique())
+
+df = pd.read_csv(clean_merged_news)
+print(df.columns)
