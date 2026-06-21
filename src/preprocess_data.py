@@ -39,6 +39,26 @@ def add_column(csv_file, column_name, value):
     df.to_csv(csv_file, index=False)
     print(f"Added column: {column_name}")
 
+def merge_market_data_csv(files, output_file):
+    dfs = []
+
+    # Read all csv files
+    for file in files:
+        df = pd.read_csv(file, parse_dates=["Date"])
+        dfs.append(df)
+
+    # Merge all dataframes
+    merged_df = pd.concat(dfs, ignore_index=True)
+
+    # Sort by publication time
+    merged_df = merged_df.sort_values(["ticker", "Date"]).reset_index(drop=True)
+
+    # Save if output file specified
+    if output_file:
+        merged_df.to_csv(output_file, index=False)
+        print(f"Generated merged file: {output_file}")
+        print(f"Total rows: {len(merged_df)}")
+
 def merge_news_csv(files, output_file=None):
     dfs = []
 
@@ -247,9 +267,9 @@ final_news = f"../data/final_{ticker}_news_sentiment.csv"
 yf_aapl_market_data = "../data/yf_aapl_market_data.csv"
 yf_amzn_market_data = "../data/yf_amzn_market_data.csv"
 yf_googl_market_data = "../data/yf_googl_market_data.csv"
-yf_ibm_market_data = "../data/yf_ibm_market_data.csv"
 yf_msft_market_data = "../data/yf_msft_market_data.csv"
 yf_nvda_market_data = "../data/yf_nvda_market_data.csv"
+merged_market_data = "../data/yf_merged_market_data.csv"
 
 # chop_by_period("../data/finnhub_nvda_news.csv", "2023-05-01","2026-04-30")
 
@@ -277,5 +297,8 @@ yf_nvda_market_data = "../data/yf_nvda_market_data.csv"
 # df = pd.read_csv(clean_merged_news)
 # print(df["ticker"].unique())
 
-df = pd.read_csv(clean_merged_news)
-print(df.columns)
+# df = pd.read_csv(clean_merged_news)
+# print(df.columns)
+
+# files = [yf_nvda_market_data, yf_aapl_market_data, yf_amzn_market_data, yf_googl_market_data, yf_msft_market_data]
+# merge_market_data_csv(files, merged_market_data)

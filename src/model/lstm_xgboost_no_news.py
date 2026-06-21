@@ -116,7 +116,7 @@ x = LSTM(64, return_sequences=False)(inputs)  # 64 memory cells
 x = Dropout(0.2)(x)                           # Prevent overfitting
 
 # This is the crucial Latent Layer. We will extract data from here later!
-latent_layer = Dense(32, activation='relu', name='latent_memory')(x)
+latent_layer = Dense(16, activation='relu', name='latent_memory')(x)
 
 # Final classification output for the LSTM's initial training
 outputs = Dense(1, activation='linear')(latent_layer)
