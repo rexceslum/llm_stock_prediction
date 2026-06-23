@@ -5,7 +5,7 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.metrics import RootMeanSquaredError
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Input, LSTM, Dense, Dropout
+from tensorflow.keras.layers import Input, LSTM, Dense, Dropout, BatchNormalization
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler, RobustScaler
@@ -37,14 +37,8 @@ df["Target_Forward_Return"] = df.groupby('ticker')["Daily_Return_Pct"].transform
 # Drop rows with NaN targets (unknown future)
 df_clean = df.dropna(subset=["Target_Forward_Return"]).copy()
 
-# Before splitting into X_raw, make 'Date' the index (if it isn't already)
-df_clean.set_index('Date', inplace=True)
-
-# Apply one-hot encoding to the 'city' column
-# df_clean = pd.get_dummies(df_clean, columns=['ticker'], dtype=int)
-
 # Feature engineering to generate stationary features from non-stationary features
-df_clean = df_helper.generate_stationary_features(df_clean)
+df_clean = df_helper.generate_stationary_features_multi(df_clean)
 
 # Optional but recommended: One-hot encode the ticker so the LSTM knows which stock it's looking at
 df_clean = pd.get_dummies(df_clean, columns=['ticker'], dtype=int)
@@ -52,7 +46,7 @@ df_clean = pd.get_dummies(df_clean, columns=['ticker'], dtype=int)
 # Separate Features (X) and Targets (y)
 # We use Target_Forward_Return for a regression task
 feature_cols = [
-    "ticker",
+    # "ticker",
     "Daily_Return_Pct",         # OHLC indicators
     "Open_Close_Return",
     "High_Low_Range",
@@ -76,46 +70,60 @@ feature_cols = [
 ticker_cols = [col for col in df_clean.columns if col.startswith('ticker_')]
 feature_cols.extend(ticker_cols)
 
-df_clean.set_index('Date', inplace=True)
 df_clean.sort_index(inplace=True) # Sort chronologically for the global split
-X_raw = df_clean[feature_cols].values
-y_raw = df_clean["Target_Forward_Return"].values
 
-# Temporal Train/Test Split (Never use random shuffle for time-series stock data!)
-# We split chronologically so the test set is entirely in the future relative to the training set.
-split_index = int(len(X_raw) * 0.9)  # 90% Train, 10% Test
+# Global Temporal Train/Test Split
+# We split by unique dates to ensure the test set is purely in the future
+unique_dates = df_clean.index.unique()
+split_idx = int(len(unique_dates) * 0.9)
+split_date = unique_dates[split_idx]
 
-X_train_raw, X_test_raw = X_raw[:split_index], X_raw[split_index:]
-y_train_raw, y_test_raw = y_raw[:split_index], y_raw[split_index:]
+train_df = df_clean[df_clean.index < split_date].copy()
+test_df = df_clean[df_clean.index >= split_date].copy()
+print(f"\nTrain date range: {train_df.index.min()} to {train_df.index.max()}")
+print(f"Test date range : {test_df.index.min()} to {test_df.index.max()}")
+print("\nTrain rows by ticker:")
+print(train_df[ticker_cols].sum())
+print("\nTest rows by ticker:")
+print(test_df[ticker_cols].sum())
 
 # Fit the Scaler ONLY on the Training Data (No Lookahead Bias!)
 # scaler = StandardScaler()
 scaler = RobustScaler()
-X_train_scaled = scaler.fit_transform(X_train_raw)
+# Scale only the continuous features, not the one-hot encoded tickers or targets
+continuous_features = [col for col in feature_cols if col not in ticker_cols]
 
-# Transform the Test Data using the rules learned from the Train Data
-X_test_scaled = scaler.transform(X_test_raw)
+train_df[continuous_features] = scaler.fit_transform(train_df[continuous_features])
+test_df[continuous_features] = scaler.transform(test_df[continuous_features])
 
-def create_sequences(features, targets, lookback):
+def create_sequences_multi(df_subset, features_list, lookback, ticker_columns):
     X_seq, y_seq = [], []
-    for i in range(len(features) - lookback):
-        # Extract a slice of 30 consecutive trading days
-        X_seq.append(features[i : (i + lookback)])
-        # The target corresponds to the day right after the window ends
-        y_seq.append(targets[i + lookback])
+
+    # Create LSTM sequences without crossing ticker boundaries.
+    for ticker_col in ticker_columns:
+        stock_group = df_subset[df_subset[ticker_col] == 1]
+        stock_group = stock_group.sort_index()
+
+        features = stock_group[features_list].values
+        targets = stock_group["Target_Forward_Return"].values
+
+        for i in range(len(features) - lookback):
+            X_seq.append(features[i: (i + lookback)])
+            y_seq.append(targets[i + lookback])
+
     return np.array(X_seq), np.array(y_seq)
 
 # Let's assume your model looks back at the past 20 trading days to predict tomorrow
 lookback_days = 20
 
 # Create sequences separately to ensure train/test don't bleed into each other during windowing
-X_train_3D, y_train_final = create_sequences(X_train_scaled, y_train_raw, lookback_days)
-X_test_3D, y_test_final = create_sequences(X_test_scaled, y_test_raw, lookback_days)
+X_train_3D, y_train_final = create_sequences_multi(train_df, feature_cols, lookback_days, ticker_cols)
+X_test_3D, y_test_final = create_sequences_multi(test_df, feature_cols, lookback_days, ticker_cols)
 
 # Verify Shapes
-print("\n--- DATA PREPARATION COMPLETE FOR HYBRID MODEL ---")
-print(f"X_train shape (Samples, Time Steps, Features): {X_train_3D.shape}")
-print(f"X_test shape  (Samples, Time Steps, Features): {X_test_3D.shape}")
+print("\n--- DATA PREPARATION COMPLETE ---")
+print(f"X_train shape: {X_train_3D.shape}")
+print(f"X_test shape:  {X_test_3D.shape}")
 print(f"y_train shape (Total Targets): {y_train_final.shape}")
 print(f"y_test shape (Total Targets): {y_test_final.shape}")
 
@@ -126,10 +134,23 @@ print("\n=== PHASE 1: Training the LSTM Feature Extractor ===")
 # Build the LSTM Architecture
 lstm_model = Sequential([
     Input(shape=(lookback_days, num_features)),
-    LSTM(64, return_sequences=False),
+
+    # Layer 1: Wider LSTM to capture initial complex features
+    # return_sequences=True is REQUIRED to pass 3D data to the next LSTM
+    LSTM(64, return_sequences=True),
+    Dropout(0.2),  # Increased dropout to fight overfitting on noise
+    BatchNormalization(),  # Normalizes activations, helps prevent the "flatline" mean prediction
+
+    # Layer 2: Funnels the sequence down into a single vector
+    LSTM(32, return_sequences=False),
     Dropout(0.2),
-    Dense(32, activation='relu'),
-    Dense(1, activation='linear')  # Makes the final regression prediction directly
+    BatchNormalization(),
+
+    # Layer 3: Dense feature mapping
+    Dense(16, activation='relu'),
+
+    # Final Output
+    Dense(1, activation='linear')
 ])
 
 lstm_model.compile(optimizer='adam', loss='mse', metrics=['mae', RootMeanSquaredError(name='rmse')])
@@ -141,7 +162,7 @@ history = lstm_model.fit(
     X_train_3D, y_train_final,
     validation_data=(X_test_3D, y_test_final),
     epochs=100,
-    batch_size=32,
+    batch_size=64,
     callbacks=[early_stop],
     verbose=1
 )

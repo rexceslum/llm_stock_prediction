@@ -37,7 +37,7 @@ def eda(df):
     print("\n"+"=" * 30)
     print("Outlier Percentage")
     print("=" * 30)
-    numeric_df = df.drop(columns=['Date', 'ticker']).copy()
+    numeric_df = df.drop(columns=['Date', 'ticker'], errors='ignore').copy()
     IQR(numeric_df)
     print("If outlier_percent > 1%, use RobustScaler. If it is 0%, use StandardScaler.")
 
@@ -89,6 +89,42 @@ def generate_stationary_features(df):
     # MACD
     df["MACD_Pct"] = (df["MACD_12_26_9"] / df["Close"])
     df["MACD_Hist_Pct"] = (df["MACDh_12_26_9"] / df["Close"])
+
+    # Remove NaN and infinite values created by transformations
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df.dropna(inplace=True)
+    return df
+
+def generate_stationary_features_multi(df):
+    # Make sure the dataframe is sorted properly before doing time-based math
+    df = df.sort_values(by=['ticker', 'Date']).copy()
+
+    # Intraday price relationships
+    df["Open_Close_Return"] = (df["Close"] - df["Open"]) / df["Open"]
+    df["High_Low_Range"] = (df["High"] - df["Low"]) / df["Close"]
+
+    # Moving-average distances
+    df["EMA_20_Dist"] = (df["Close"] - df["EMA_20"]) / df["EMA_20"]
+    df["SMA_50_Dist"] = (df["Close"] - df["SMA_50"]) / df["SMA_50"]
+    df["SMA_200_Dist"] = (df["Close"] - df["SMA_200"]) / df["SMA_200"]
+
+    # Volatility
+    df["ATR_14_Pct"] = df["ATR_14"] / df["Close"]
+
+    # MACD
+    df["MACD_Pct"] = (df["MACD_12_26_9"] / df["Close"])
+    df["MACD_Hist_Pct"] = (df["MACDh_12_26_9"] / df["Close"])
+
+    # These MUST be grouped by ticker so data doesn't bleed across stocks.
+    # Volume features
+    df["Log_Volume_Change"] = df.groupby('ticker')["Volume"].transform(lambda x: np.log1p(x).diff())
+    df["Relative_Volume_20"] = df["Volume"] / df.groupby('ticker')["Volume"].transform(lambda x: x.rolling(20).mean())
+
+    # OBV
+    # Calculate the diff and rolling mean per-ticker, then divide
+    obv_diff = df.groupby('ticker')["OBV"].transform(lambda x: x.diff())
+    vol_roll_mean = df.groupby('ticker')["Volume"].transform(lambda x: x.rolling(20).mean())
+    df["OBV_Change_Normalized"] = obv_diff / vol_roll_mean
 
     # Remove NaN and infinite values created by transformations
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
