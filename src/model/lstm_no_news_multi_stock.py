@@ -23,15 +23,18 @@ np.random.seed(42)
 tf.random.set_seed(42)
 
 # Load the CSV
-df = pd.read_csv("../../data/yf_nvda_market_data.csv", index_col="Date")
+df = pd.read_csv("../../data/yf_merged_market_data.csv", index_col="Date")
 # df = market_data_repo.retrieve_by_ticker("NVDA")
 df_helper.eda(df)
 
 # Change target variable to this (Predicting the next 5 days of cumulative return):
-df["Target_Forward_Return"] = df["Daily_Return_Pct"].shift(-5).rolling(window=5).sum()
+# We MUST group by ticker so the rolling window doesn't bleed AAPL into NVDA
+df.sort_values(by=['ticker', 'Date'], inplace=True)
+df["Target_Forward_Return"] = df.groupby('ticker')["Daily_Return_Pct"].transform(
+    lambda x: x.rolling(window=5).sum().shift(-5)
+)
 
-# Drop the final row because its Target columns are NaN (unknown future)
-# We can't use it for training, but we keep it aside if we want to predict tomorrow live
+# Drop rows with NaN targets (unknown future)
 df_clean = df.dropna(subset=["Target_Forward_Return"]).copy()
 
 # Before splitting into X_raw, make 'Date' the index (if it isn't already)
@@ -43,10 +46,13 @@ df_clean.set_index('Date', inplace=True)
 # Feature engineering to generate stationary features from non-stationary features
 df_clean = df_helper.generate_stationary_features(df_clean)
 
+# Optional but recommended: One-hot encode the ticker so the LSTM knows which stock it's looking at
+df_clean = pd.get_dummies(df_clean, columns=['ticker'], dtype=int)
+
 # Separate Features (X) and Targets (y)
 # We use Target_Forward_Return for a regression task
 feature_cols = [
-    # "ticker",
+    "ticker",
     "Daily_Return_Pct",         # OHLC indicators
     "Open_Close_Return",
     "High_Low_Range",
@@ -65,6 +71,13 @@ feature_cols = [
     "Log_Volume_Change",
     # "Relative_Volume_20",
 ]
+
+# Add one-hot encoded ticker columns to our feature list
+ticker_cols = [col for col in df_clean.columns if col.startswith('ticker_')]
+feature_cols.extend(ticker_cols)
+
+df_clean.set_index('Date', inplace=True)
+df_clean.sort_index(inplace=True) # Sort chronologically for the global split
 X_raw = df_clean[feature_cols].values
 y_raw = df_clean["Target_Forward_Return"].values
 

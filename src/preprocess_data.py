@@ -156,6 +156,7 @@ def group_news_by_date(input, output):
         "news_text",
         "finbert_label",
         "sentiment_score",
+        "llm_label",
     }
     numerical_columns = [
         column
@@ -261,8 +262,9 @@ eodhd_news = f"../data/eodhd_{ticker}_news.csv"
 merged_news = f"../data/merged_{ticker}_news.csv"
 clean_merged_news = f"../data/cleaned_merged_{ticker}_news.csv"
 finbert_news = f"../data/finbert_{ticker}_news_sentiment.csv"
-llm_news = f"../data/llm_{ticker}_news_sentiment.csv"
-final_news = f"../data/final_{ticker}_news_sentiment.csv"
+final_finbert_news = f"../data/final_finbert_{ticker}_news_sentiment.csv"
+gpt_news = f"../data/gpt_{ticker}_news_sentiment.csv"
+final_gpt_news = f"../data/final_gpt_{ticker}_news_sentiment.csv"
 
 yf_aapl_market_data = "../data/yf_aapl_market_data.csv"
 yf_amzn_market_data = "../data/yf_amzn_market_data.csv"
@@ -291,8 +293,11 @@ merged_market_data = "../data/yf_merged_market_data.csv"
 
 # save_to_db(yf_nvda_market_data, "tbl_stock_market_data", "append")
 
-# group_news_by_date(finbert_news, final_news)
-# find_missing_dates(final_news, "Date", "2023-05-01","2026-04-30")
+# group_news_by_date(finbert_news, final_finbert_news)
+# find_missing_dates(final_finbert_news, "Date", "2023-05-01","2026-04-30")
+
+group_news_by_date(gpt_news, final_gpt_news)
+find_missing_dates(final_gpt_news, "Date", "2023-05-01","2026-04-30")
 
 # df = pd.read_csv(clean_merged_news)
 # print(df["ticker"].unique())
