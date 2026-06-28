@@ -180,34 +180,54 @@ def group_news_by_date(input, output):
     print("Total rows: ", len(aggregated_df))
     print("Saved to CSV")
 
-def group_llm_news_by_date(input, output):
-    df = pd.read_csv(input, parse_dates=["pub_time"])
-    df["Date"] = df["pub_time"].dt.date
-    excluded_columns = {
-        "pub_time",
-        "title",
-        "summary",
-        "news_text",
-        "llm_label",
-        "llm_error",
-    }
-    numerical_columns = [
-        column
-        for column in df.select_dtypes(include="number").columns
-        if column not in excluded_columns
-    ]
-    aggregated_df = (
-        df.groupby(["Date", "ticker"], as_index=False)
-        .agg(
-            **{
-                column: (column, "mean")
-                for column in numerical_columns
-            },
-            news_count=("ticker", "size"),
-        )
-        .sort_values(["Date", "ticker"])
-        .reset_index(drop=True)
+def merge_market_data_and_news_sentiment(market_csv, news_csv, output_csv):
+    market_df = pd.read_csv(market_csv, parse_dates=["Date"]).sort_values("Date")
+    news_df = pd.read_csv(news_csv, parse_dates=["Date"]).sort_values("Date")
+
+    # Create a subset of just the valid market dates per ticker
+    market_dates = market_df[['Date', 'ticker']].drop_duplicates().copy()
+    market_dates['Market_Date'] = market_dates['Date']  # Duplicate to preserve the target date
+
+    # Map each news date forward to the next available market date
+    mapped_news = pd.merge_asof(
+        news_df,
+        market_dates,
+        on="Date",
+        by="ticker",
+        direction="forward"
     )
+
+    # Drop any news at the very end of the dataset that has no future market date
+    mapped_news = mapped_news.dropna(subset=["Market_Date"])
+
+    # Aggregate the news that now share the same Market_Date
+    # We calculate the mean for sentiment, but SUM the news_count
+    agg_rules = {
+        'finbert_positive': 'mean',
+        'finbert_negative': 'mean',
+        'finbert_neutral': 'mean',
+        'finbert_confidence': 'mean',
+        'finbert_score': 'mean',
+        'news_count': 'sum'  # e.g., Sat + Sun news volume combined for Monday
+    }
+
+    agg_news = mapped_news.groupby(['Market_Date', 'ticker']).agg(agg_rules).reset_index()
+
+    # Rename 'Market_Date' back to 'Date' so we can join it back to the original market data
+    agg_news = agg_news.rename(columns={'Market_Date': 'Date'})
+
+    # Merge the aggregated news into the market data
+    # 'left' join ensures we keep all market days, even if there was zero news
+    final_df = pd.merge(market_df, agg_news, on=['Date', 'ticker'], how='left')
+
+    # Clean up missing values for days with no news at all
+    final_df['news_count'] = final_df['news_count'].fillna(0)
+    # Note: Sentiment scores are left as NaN on days with 0 news.
+    # If your ML model requires it, you can fill them with 0 using final_df.fillna(...)
+
+    final_df.to_csv(output_csv, index=False)
+    print("Total rows: ", len(final_df))
+    print(f"Successfully merged data and saved to CSV")
 
 # def remove_fuzzy_duplicate(csv_file):
 #     df = pd.read_csv(csv_file, parse_dates=["pub_time"])
@@ -253,7 +273,7 @@ def save_to_db(csv_file, table_name, mode="append"):
 
 
 
-ticker = "nvda"
+ticker = "msft"
 alpha_news = f"../data/alpha_{ticker}_news.csv"
 finnhub_news = f"../data/finnhub_{ticker}_news.csv"
 massive_news = f"../data/massive_{ticker}_news.csv"
@@ -262,9 +282,9 @@ eodhd_news = f"../data/eodhd_{ticker}_news.csv"
 merged_news = f"../data/merged_{ticker}_news.csv"
 clean_merged_news = f"../data/cleaned_merged_{ticker}_news.csv"
 finbert_news = f"../data/finbert_{ticker}_news_sentiment.csv"
-final_finbert_news = f"../data/final_finbert_{ticker}_news_sentiment.csv"
+cleaned_finbert_news = f"../data/cleaned_finbert_{ticker}_news_sentiment.csv"
 gpt_news = f"../data/gpt_{ticker}_news_sentiment.csv"
-final_gpt_news = f"../data/final_gpt_{ticker}_news_sentiment.csv"
+cleaned_gpt_news = f"../data/cleaned_gpt_{ticker}_news_sentiment.csv"
 
 yf_aapl_market_data = "../data/yf_aapl_market_data.csv"
 yf_amzn_market_data = "../data/yf_amzn_market_data.csv"
@@ -272,6 +292,9 @@ yf_googl_market_data = "../data/yf_googl_market_data.csv"
 yf_msft_market_data = "../data/yf_msft_market_data.csv"
 yf_nvda_market_data = "../data/yf_nvda_market_data.csv"
 merged_market_data = "../data/yf_merged_market_data.csv"
+
+yf_market_data = f"../data/yf_{ticker}_market_data.csv"
+combined_finbert_market_data = f"../data/combined_finbert_{ticker}_market_data.csv"
 
 # chop_by_period("../data/finnhub_nvda_news.csv", "2023-05-01","2026-04-30")
 
@@ -293,17 +316,19 @@ merged_market_data = "../data/yf_merged_market_data.csv"
 
 # save_to_db(yf_nvda_market_data, "tbl_stock_market_data", "append")
 
-# group_news_by_date(finbert_news, final_finbert_news)
-# find_missing_dates(final_finbert_news, "Date", "2023-05-01","2026-04-30")
+# group_news_by_date(finbert_news, cleaned_finbert_news)
+# find_missing_dates(cleaned_finbert_news, "Date", "2023-05-01","2026-04-30")
 
-group_news_by_date(gpt_news, final_gpt_news)
-find_missing_dates(final_gpt_news, "Date", "2023-05-01","2026-04-30")
+# group_news_by_date(gpt_news, cleaned_gpt_news)
+# find_missing_dates(cleaned_gpt_news, "Date", "2023-05-01","2026-04-30")
 
 # df = pd.read_csv(clean_merged_news)
 # print(df["ticker"].unique())
 
-# df = pd.read_csv(clean_merged_news)
+# df = pd.read_csv(yf_aapl_market_data)
 # print(df.columns)
 
 # files = [yf_nvda_market_data, yf_aapl_market_data, yf_amzn_market_data, yf_googl_market_data, yf_msft_market_data]
 # merge_market_data_csv(files, merged_market_data)
+
+# merge_market_data_and_news_sentiment(yf_market_data, cleaned_finbert_news, combined_finbert_market_data)

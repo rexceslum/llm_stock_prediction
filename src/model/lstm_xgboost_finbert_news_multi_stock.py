@@ -233,7 +233,7 @@ xgb_model.fit(X_train_hybrid, y_train_final,
               verbose=5)
 
 # Generate rmse and mae graph of model training
-plotting_helper.plot_xgboost_train_graph(xgb_model.evals_result(), "hybrid")
+plotting_helper.plot_xgboost_train_graph(xgb_model.evals_result(), "lstm-xgboost")
 
 print("\n=== PHASE 4: Final Evaluation ===")
 
@@ -338,7 +338,7 @@ plt.grid(True, linestyle='--', alpha=0.5)
 plt.tight_layout()
 
 # Show the plot
-file_name = f"../../output/hybrid_multi_prediction_{datetime.now().strftime('%Y%m%dT%H%M%S')}.png"
+file_name = f"../../output/lstm_xgboost_multi_prediction_{datetime.now().strftime('%Y%m%dT%H%M%S')}.png"
 plt.savefig(file_name)
 plt.close()
 print(f"Saved prediction result to PNG")

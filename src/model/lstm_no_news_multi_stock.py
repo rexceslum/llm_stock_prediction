@@ -3,6 +3,9 @@ import random
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime
 from tensorflow.keras.metrics import RootMeanSquaredError
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Input, LSTM, Dense, Dropout, BatchNormalization
@@ -27,20 +30,25 @@ df = pd.read_csv("../../data/yf_merged_market_data.csv", index_col="Date")
 # df = market_data_repo.retrieve_by_ticker("NVDA")
 df_helper.eda(df)
 
+df.sort_values(by=['ticker', 'Date'], inplace=True)
+
 # Change target variable to this (Predicting the next 5 days of cumulative return):
 # We MUST group by ticker so the rolling window doesn't bleed AAPL into NVDA
-df.sort_values(by=['ticker', 'Date'], inplace=True)
-df["Target_Forward_Return"] = df.groupby('ticker')["Daily_Return_Pct"].transform(
-    lambda x: x.rolling(window=5).sum().shift(-5)
-)
+days_forward = 1
+# df["Target_Forward_Return"] = df.groupby('ticker')["Daily_Return_Pct"].transform(
+#     lambda x: x.rolling(window=days_forward).sum().shift(-days_forward)
+# )
 
 # Drop rows with NaN targets (unknown future)
 df_clean = df.dropna(subset=["Target_Forward_Return"]).copy()
 
+# Before splitting into X_raw, make 'Date' the index (if it isn't already)
+# df_clean.set_index('Date', inplace=True)
+
 # Feature engineering to generate stationary features from non-stationary features
 df_clean = df_helper.generate_stationary_features_multi(df_clean)
 
-# Optional but recommended: One-hot encode the ticker so the LSTM knows which stock it's looking at
+# One-hot encode the ticker to convert text into numeric labels
 df_clean = pd.get_dummies(df_clean, columns=['ticker'], dtype=int)
 
 # Separate Features (X) and Targets (y)
@@ -72,14 +80,19 @@ feature_cols.extend(ticker_cols)
 
 df_clean.sort_index(inplace=True) # Sort chronologically for the global split
 
+# Let's assume your model looks back at the past 20 trading days to predict tomorrow
+lookback_days = 20
+
 # Global Temporal Train/Test Split
 # We split by unique dates to ensure the test set is purely in the future
 unique_dates = df_clean.index.unique()
 split_idx = int(len(unique_dates) * 0.9)
 split_date = unique_dates[split_idx]
+# To fill up the gap between training and testing set due to the lookback windows, we add a warmup period for testing set
+warmup_date = unique_dates[split_idx - lookback_days]
 
 train_df = df_clean[df_clean.index < split_date].copy()
-test_df = df_clean[df_clean.index >= split_date].copy()
+test_df = df_clean[df_clean.index >= warmup_date].copy()
 print(f"\nTrain date range: {train_df.index.min()} to {train_df.index.max()}")
 print(f"Test date range : {test_df.index.min()} to {test_df.index.max()}")
 print("\nTrain rows by ticker:")
@@ -113,17 +126,14 @@ def create_sequences_multi(df_subset, features_list, lookback, ticker_columns):
 
     return np.array(X_seq), np.array(y_seq)
 
-# Let's assume your model looks back at the past 20 trading days to predict tomorrow
-lookback_days = 20
-
 # Create sequences separately to ensure train/test don't bleed into each other during windowing
 X_train_3D, y_train_final = create_sequences_multi(train_df, feature_cols, lookback_days, ticker_cols)
 X_test_3D, y_test_final = create_sequences_multi(test_df, feature_cols, lookback_days, ticker_cols)
 
 # Verify Shapes
 print("\n--- DATA PREPARATION COMPLETE ---")
-print(f"X_train shape: {X_train_3D.shape}")
-print(f"X_test shape:  {X_test_3D.shape}")
+print(f"X_train shape (Samples, Time Steps, Features): {X_train_3D.shape}")
+print(f"X_test shape (Samples, Time Steps, Features):  {X_test_3D.shape}")
 print(f"y_train shape (Total Targets): {y_train_final.shape}")
 print(f"y_test shape (Total Targets): {y_test_final.shape}")
 
@@ -137,17 +147,17 @@ lstm_model = Sequential([
 
     # Layer 1: Wider LSTM to capture initial complex features
     # return_sequences=True is REQUIRED to pass 3D data to the next LSTM
-    LSTM(64, return_sequences=True),
+    LSTM(128, return_sequences=True),
     Dropout(0.2),  # Increased dropout to fight overfitting on noise
     BatchNormalization(),  # Normalizes activations, helps prevent the "flatline" mean prediction
 
     # Layer 2: Funnels the sequence down into a single vector
-    LSTM(32, return_sequences=False),
+    LSTM(64, return_sequences=False),
     Dropout(0.2),
     BatchNormalization(),
 
     # Layer 3: Dense feature mapping
-    Dense(16, activation='relu'),
+    Dense(32, activation='relu'),
 
     # Final Output
     Dense(1, activation='linear')
@@ -190,3 +200,78 @@ for i in range(5):
     actual_pct = y_test_final[i] * 100
     pred_pct = y_pred[i] * 100
     print(f"Day {i+1}: Actual: {actual_pct:+.2f}%  |  Predicted: {pred_pct:+.2f}%")
+
+print("\n=== PHASE 5: Plotting Results (All Stocks) ===")
+
+plt.figure(figsize=(18, 10))
+
+# Define a distinct color map for up to 5 stocks (Standard Matplotlib Tableau Colors)
+colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+
+# 2. Loop through each one-hot column
+for i, ticker_col in enumerate(ticker_cols):
+    # Strip the prefix to get the clean stock name for the legend (e.g., 'ticker_NVDA' -> 'NVDA')
+    stock_name = ticker_col.replace('ticker_', '')
+    color = colors[i % len(colors)]
+
+    # 3. Filter the dataframe where this specific stock is '1'
+    stock_train_df = train_df[train_df[ticker_col] == 1]
+    stock_test_df = test_df[test_df[ticker_col] == 1]
+
+    # 4. Generate sequences specifically for this stock
+    # Your one-hot create_sequences_multi will handle this perfectly
+    X_train_stock, y_train_actual = create_sequences_multi(stock_train_df, feature_cols, lookback_days, ticker_cols)
+    X_test_stock, y_test_actual = create_sequences_multi(stock_test_df, feature_cols, lookback_days, ticker_cols)
+
+    # 5. Generate predictions
+    y_train_pred = lstm_model.predict(X_train_stock, verbose=0).flatten()
+    y_test_pred = lstm_model.predict(X_test_stock, verbose=0).flatten()
+
+    # 6. Extract corresponding dates
+    train_dates = pd.to_datetime(stock_train_df.index)[lookback_days:]
+    test_dates = pd.to_datetime(stock_test_df.index)[lookback_days:]
+
+    # 7. Plot Training Data (Faint/Transparent)
+    plt.plot(train_dates, y_train_actual, color=color, alpha=0.15)
+    plt.plot(train_dates, y_train_pred, color=color, alpha=0.15, linestyle=':')
+
+    # 8. Plot Testing Data (Bold)
+    plt.plot(test_dates, y_test_actual, color=color, alpha=0.9, label=f'{stock_name} Actual')
+    plt.plot(test_dates, y_test_pred, color=color, alpha=0.9, linestyle='--', label=f'{stock_name} Predicted')
+
+# Draw a vertical dashed line exactly where the testing period begins
+global_test_dates = pd.to_datetime(test_df.index.unique()).sort_values()
+first_prediction_date = global_test_dates[lookback_days]
+plt.axvline(x=first_prediction_date, color='black', linestyle='-.', linewidth=2, label='Train/Test Split')
+
+# Annotate Metrics (Ensure mae, rmse, r2 exist in your scope from Phase 2)
+metrics_text = (
+    f"Overall Test Metrics:\n"
+    f"RMSE: {rmse:.4f}\n"
+    f"MAE: {mae:.4f}\n"
+    f"R2: {r2:.4f}"
+)
+
+props = dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9, edgecolor='gray')
+plt.gca().text(0.02, 0.96, metrics_text, transform=plt.gca().transAxes,
+               fontsize=12, verticalalignment='top', bbox=props)
+
+# Format the Graph
+plt.title(f'Multi-Stock Ground Truth vs Predicted {days_forward}-Day Forward Returns', fontsize=18, fontweight='bold')
+plt.xlabel('Date', fontsize=12)
+plt.ylabel(f'Cumulative {days_forward}-Day Return', fontsize=12)
+
+plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+plt.gca().xaxis.set_major_locator(mdates.AutoDateLocator())
+plt.gcf().autofmt_xdate()
+
+# Move legend outside so it doesn't cover the data
+plt.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=10, borderaxespad=0.)
+plt.grid(True, linestyle='--', alpha=0.5)
+
+plt.tight_layout()
+
+file_name = f"../../output/lstm_multi_prediction_{datetime.now().strftime('%Y%m%dT%H%M%S')}.png"
+plt.savefig(file_name)
+plt.close()
+print("Saved prediction result to PNG")
