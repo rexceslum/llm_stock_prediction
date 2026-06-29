@@ -9,6 +9,7 @@ import matplotlib.dates as mdates
 from datetime import datetime
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler, RobustScaler
+from scipy.stats import spearmanr
 
 from src.database import market_data_repo
 from src.helper import df_helper, plotting_helper
@@ -23,7 +24,7 @@ np.random.seed(42)
 tf.random.set_seed(42)
 
 # Load the CSV
-df = pd.read_csv("../../data/yf_merged_market_data.csv", index_col="Date")
+df = pd.read_csv("../../data/yf_merged_market_data.csv", index_col="Date", parse_dates=True)
 # df = market_data_repo.retrieve_by_ticker("NVDA")
 df_helper.eda(df)
 
@@ -145,14 +146,47 @@ print("\n=== PHASE 2: Final Evaluation ===")
 # Make predictions
 y_pred = xgb_model.predict(X_test_2D)
 
-# Regression Metrics
+# 1. Standard Regression Metrics
 mae = mean_absolute_error(y_test_final, y_pred)
 rmse = np.sqrt(mean_squared_error(y_test_final, y_pred))
 r2 = r2_score(y_test_final, y_pred)
 
+# 2. Quant Finance Metrics (Accuracy & IC)
+correct_direction = np.sign(y_test_final) == np.sign(y_pred)
+directional_accuracy = np.mean(correct_direction) * 100
+ic, p_value = spearmanr(y_pred, y_test_final)
+
+# 3. Simulate a Trading Strategy for the Sharpe Ratio
+# Signal: +1 if predicted UP, -1 if predicted DOWN
+trading_signals = np.where(y_pred > 0, 1, -1)
+
+# Strategy Return: Signal * Actual Daily Return
+strategy_returns = trading_signals * y_test_final
+
+# Annualize the returns and volatility (assuming 252 trading days in a year)
+# We assume a risk-free rate of 0% for this basic simulation
+if np.std(strategy_returns) != 0:
+    annualized_return = np.mean(strategy_returns) * 252
+    annualized_volatility = np.std(strategy_returns) * np.sqrt(252)
+    sharpe_ratio = annualized_return / annualized_volatility
+else:
+    annualized_return = 0.0
+    annualized_volatility = 0.0
+    sharpe_ratio = 0.0
+
+print("--- Standard Metrics ---")
 print(f"Mean Absolute Error (MAE): {mae:.4f}")
 print(f"Root Mean Squared Error (RMSE): {rmse:.4f}")
 print(f"R-Squared (R2): {r2:.4f}")
+
+print("\n--- Quant Trading Metrics ---")
+print(f"Directional Accuracy (Hit Rate): {directional_accuracy:.2f}%")
+print(f"Information Coefficient (IC): {ic:.4f} (p-value: {p_value:.4f})")
+
+print("\n--- Simulated Portfolio Performance ---")
+print(f"Annualized Return: {annualized_return * 100:.2f}%")
+print(f"Annualized Volatility: {annualized_volatility * 100:.2f}%")
+print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
 
 # Print a few examples to see real vs predicted
 print("\nSample Predictions vs Actual Returns:")
@@ -193,13 +227,25 @@ for i, ticker_col in enumerate(ticker_cols):
     y_train_pred = xgb_model.predict(X_train_stock)
     y_test_pred = xgb_model.predict(X_test_stock)
 
+    # Fetch the ACTUAL Prices for the BASE day (Today)
+    base_train_price = stock_train_df['Close'].values
+    base_test_price = stock_test_df['Close'].values
+
+    # Convert predicted and actual returns to future PRICES
+    # Math: Future Price = Today's Actual Price * (1 + Return)
+    y_train_actual_price = base_train_price * (1 + y_train_actual)
+    y_test_actual_price = base_test_price * (1 + y_test_actual)
+
+    y_train_pred_price = base_train_price * (1 + y_train_pred)
+    y_test_pred_price = base_test_price * (1 + y_test_pred)
+
     # 7. Plot Training Data (Faint/Transparent)
-    plt.plot(train_dates, y_train_actual, color=color, alpha=0.15)
-    plt.plot(train_dates, y_train_pred, color=color, alpha=0.15, linestyle=':')
+    plt.plot(train_dates, y_train_actual_price, color=color, alpha=0.5)
+    plt.plot(train_dates, y_train_pred_price, color=color, alpha=0.5, linestyle=':')
 
     # 8. Plot Testing Data (Bold)
-    plt.plot(test_dates, y_test_actual, color=color, alpha=0.9, label=f'{stock_name} Actual')
-    plt.plot(test_dates, y_test_pred, color=color, alpha=0.9, linestyle='--', label=f'{stock_name} Predicted')
+    plt.plot(test_dates, y_test_actual_price, color=color, alpha=0.9, label=f'{stock_name} Actual')
+    plt.plot(test_dates, y_test_pred_price, color=color, alpha=0.9, linestyle='--', label=f'{stock_name} Predicted')
 
 # Draw a vertical dashed line exactly where the testing period begins
 first_prediction_date = test_dates[0]
@@ -210,7 +256,12 @@ metrics_text = (
     f"Overall Test Metrics:\n"
     f"RMSE: {rmse:.4f}\n"
     f"MAE: {mae:.4f}\n"
-    f"R2: {r2:.4f}"
+    f"R2: {r2:.4f}\n"
+    f"Hit Rate: {directional_accuracy:.2f}%\n"
+    f"IC: {ic:.4f} (p-value: {p_value:.4f})\n"
+    f"Annual Return: {annualized_return:.4f}\n"
+    f"Annual Volatility: {annualized_volatility:.4f}\n"
+    f"Sharpe Ratio: {sharpe_ratio:.4f}"
 )
 
 props = dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9, edgecolor='gray')
