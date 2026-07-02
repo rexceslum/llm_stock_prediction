@@ -202,12 +202,23 @@ def merge_market_data_and_news_sentiment(market_csv, news_csv, output_csv):
 
     # Aggregate the news that now share the same Market_Date
     # We calculate the mean for sentiment, but SUM the news_count
+    # agg_rules = {
+    #     'finbert_positive': 'mean',
+    #     'finbert_negative': 'mean',
+    #     'finbert_neutral': 'mean',
+    #     'finbert_confidence': 'mean',
+    #     'finbert_score': 'mean',
+    #     'news_count': 'sum'  # e.g., Sat + Sun news volume combined for Monday
+    # }
     agg_rules = {
-        'finbert_positive': 'mean',
-        'finbert_negative': 'mean',
-        'finbert_neutral': 'mean',
-        'finbert_confidence': 'mean',
-        'finbert_score': 'mean',
+        'llm_positive': 'mean',
+        'llm_negative': 'mean',
+        'llm_neutral': 'mean',
+        'llm_confidence': 'mean',
+        'llm_score': 'mean',
+        'llm_relevance': 'mean',
+        'llm_impact_magnitude': 'mean',
+        'llm_uncertainty': 'mean',
         'news_count': 'sum'  # e.g., Sat + Sun news volume combined for Monday
     }
 
@@ -295,6 +306,21 @@ merged_market_data = "../data/yf_merged_market_data.csv"
 
 yf_market_data = f"../data/yf_{ticker}_market_data.csv"
 combined_finbert_market_data = f"../data/combined_finbert_{ticker}_market_data.csv"
+combined_gpt_market_data = f"../data/combined_gpt_{ticker}_market_data.csv"
+
+finbert_aapl_market_data = "../data/combined_finbert_aapl_market_data.csv"
+finbert_amzn_market_data = "../data/combined_finbert_amzn_market_data.csv"
+finbert_googl_market_data = "../data/combined_finbert_googl_market_data.csv"
+finbert_msft_market_data = "../data/combined_finbert_msft_market_data.csv"
+finbert_nvda_market_data = "../data/combined_finbert_nvda_market_data.csv"
+merged_finbert_market_data = "../data/merged_finbert_market_data.csv"
+
+gpt_aapl_market_data = "../data/combined_gpt_aapl_market_data.csv"
+gpt_amzn_market_data = "../data/combined_gpt_amzn_market_data.csv"
+gpt_googl_market_data = "../data/combined_gpt_googl_market_data.csv"
+gpt_msft_market_data = "../data/combined_gpt_msft_market_data.csv"
+gpt_nvda_market_data = "../data/combined_gpt_nvda_market_data.csv"
+merged_gpt_market_data = "../data/merged_gpt_market_data.csv"
 
 # chop_by_period("../data/finnhub_nvda_news.csv", "2023-05-01","2026-04-30")
 
@@ -332,3 +358,11 @@ combined_finbert_market_data = f"../data/combined_finbert_{ticker}_market_data.c
 # merge_market_data_csv(files, merged_market_data)
 
 # merge_market_data_and_news_sentiment(yf_market_data, cleaned_finbert_news, combined_finbert_market_data)
+
+# merge_market_data_and_news_sentiment(yf_market_data, cleaned_gpt_news, combined_gpt_market_data)
+
+# files = [finbert_aapl_market_data, finbert_amzn_market_data, finbert_googl_market_data, finbert_msft_market_data, finbert_nvda_market_data]
+# merge_market_data_csv(files, merged_finbert_market_data)
+
+# files = [gpt_aapl_market_data, gpt_amzn_market_data, gpt_googl_market_data, gpt_msft_market_data, gpt_nvda_market_data]
+# merge_market_data_csv(files, merged_gpt_market_data)

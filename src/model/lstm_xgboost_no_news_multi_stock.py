@@ -11,7 +11,7 @@ from tensorflow.keras.metrics import RootMeanSquaredError
 from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.layers import Input, LSTM, Dense, Dropout, BatchNormalization
 from tensorflow.keras.callbacks import EarlyStopping
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, mean_absolute_percentage_error
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from scipy.stats import pearsonr, spearmanr
 
@@ -36,10 +36,10 @@ df.sort_values(by=['ticker', 'Date'], inplace=True)
 
 # Change target variable to this (Predicting the next 5 days of cumulative return):
 # We MUST group by ticker so the rolling window doesn't bleed AAPL into NVDA
-days_forward = 1
-# df["Target_Forward_Return"] = df.groupby('ticker')["Daily_Return_Pct"].transform(
-#     lambda x: x.rolling(window=days_forward).sum().shift(-days_forward)
-# )
+days_forward = 5
+df["Target_Forward_Return"] = df.groupby('ticker')["Daily_Return_Pct"].transform(
+    lambda x: x.rolling(window=days_forward).sum().shift(-days_forward)
+)
 
 # Drop rows with NaN targets (unknown future)
 df_clean = df.dropna(subset=["Target_Forward_Return"]).copy()
@@ -85,18 +85,33 @@ df_clean.sort_index(inplace=True) # Sort chronologically for the global split
 # Let's assume your model looks back at the past 20 trading days to predict tomorrow
 lookback_days = 20
 
-# Global Temporal Train/Test Split
+# Global Temporal Train/Validation/Test Split
 # We split by unique dates to ensure the test set is purely in the future
 unique_dates = df_clean.index.unique()
-split_idx = int(len(unique_dates) * 0.9)
-split_date = unique_dates[split_idx]
+# split_idx = int(len(unique_dates) * 0.9)
+# split_date = unique_dates[split_idx]
 # To fill up the gap between training and testing set due to the lookback windows, we add a warmup period for testing set
-warmup_date = unique_dates[split_idx - lookback_days]
+# warmup_date = unique_dates[split_idx - lookback_days]
 
-train_df = df_clean[df_clean.index < split_date].copy()
-test_df = df_clean[df_clean.index >= warmup_date].copy()
+# train_df = df_clean[df_clean.index < split_date].copy()
+# test_df = df_clean[df_clean.index >= warmup_date].copy()
+# print(f"\nTrain date range: {train_df.index.min()} to {train_df.index.max()}")
+# print(f"Test date range : {test_df.index.min()} to {test_df.index.max()}")
+
+train_idx = int(len(unique_dates) * 0.8)
+val_idx = int(len(unique_dates) * 0.9)
+train_end_date = unique_dates[train_idx]
+val_end_date = unique_dates[val_idx]
+val_warmup_date = unique_dates[train_idx - lookback_days]
+test_warmup_date = unique_dates[val_idx - lookback_days]
+train_df = df_clean[df_clean.index < train_end_date].copy()
+val_df = df_clean[(df_clean.index >= val_warmup_date) & (df_clean.index < val_end_date)].copy()
+test_df = df_clean[df_clean.index >= test_warmup_date].copy()
+
 print(f"\nTrain date range: {train_df.index.min()} to {train_df.index.max()}")
+print(f"Val date range  : {val_df.index.min()} to {val_df.index.max()}")
 print(f"Test date range : {test_df.index.min()} to {test_df.index.max()}")
+
 print("\nTrain rows by ticker:")
 print(train_df[ticker_cols].sum())
 print("\nTest rows by ticker:")
@@ -109,6 +124,7 @@ scaler = RobustScaler()
 continuous_features = [col for col in feature_cols if col not in ticker_cols]
 
 train_df[continuous_features] = scaler.fit_transform(train_df[continuous_features])
+val_df[continuous_features] = scaler.transform(val_df[continuous_features])
 test_df[continuous_features] = scaler.transform(test_df[continuous_features])
 
 def create_sequences_multi(df_subset, features_list, lookback, ticker_columns):
@@ -130,13 +146,16 @@ def create_sequences_multi(df_subset, features_list, lookback, ticker_columns):
 
 # Create sequences separately to ensure train/test don't bleed into each other during windowing
 X_train_3D, y_train_final = create_sequences_multi(train_df, feature_cols, lookback_days, ticker_cols)
+X_val_3D, y_val_final = create_sequences_multi(val_df, feature_cols, lookback_days, ticker_cols)
 X_test_3D, y_test_final = create_sequences_multi(test_df, feature_cols, lookback_days, ticker_cols)
 
 # Verify Shapes
 print("\n--- DATA PREPARATION COMPLETE ---")
 print(f"X_train shape (Samples, Time Steps, Features): {X_train_3D.shape}")
+print(f"X_val shape (Samples, Time Steps, Features): {X_val_3D.shape}")
 print(f"X_test shape (Samples, Time Steps, Features):  {X_test_3D.shape}")
 print(f"y_train shape (Total Targets): {y_train_final.shape}")
+print(f"y_val shape (Total Targets): {y_val_final.shape}")
 print(f"y_test shape (Total Targets): {y_test_final.shape}")
 
 num_features = X_train_3D.shape[2]
@@ -149,30 +168,31 @@ lstm_model = Sequential([
 
     # Layer 1: Wider LSTM to capture initial complex features
     # return_sequences=True is REQUIRED to pass 3D data to the next LSTM
-    LSTM(128, return_sequences=True),
+    LSTM(64, return_sequences=True),
     Dropout(0.2),  # Increased dropout to fight overfitting on noise
     BatchNormalization(),  # Normalizes activations, helps prevent the "flatline" mean prediction
 
     # Layer 2: Funnels the sequence down into a single vector
-    LSTM(64, return_sequences=False),
+    LSTM(32, return_sequences=False),
     Dropout(0.2),
     BatchNormalization(),
 
     # Layer 3: Dense feature mapping
-    Dense(32, activation='relu', name='feature_mapping'),
+    Dense(16, activation='relu', name='feature_mapping'),
 
     # Final Output
     Dense(1, activation='linear')
 ])
 
 lstm_model.compile(optimizer='adam', loss='mse', metrics=['mae', RootMeanSquaredError(name='rmse')])
+lstm_model.summary()
 
 # Train with Early Stopping (Stops training if the test set starts getting worse)
 early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
 
 lstm_model.fit(
     X_train_3D, y_train_final,
-    validation_data=(X_test_3D, y_test_final),
+    validation_data=(X_val_3D, y_val_final),
     epochs=100,
     batch_size=64,
     callbacks=[early_stop],
@@ -186,11 +206,12 @@ feature_extractor = Model(inputs=lstm_model.inputs, outputs=lstm_model.get_layer
 
 # Extract the 32-dimensional temporal memory for every sample
 lstm_features_train = feature_extractor.predict(X_train_3D)
+lstm_features_val = feature_extractor.predict(X_val_3D)
 lstm_features_test = feature_extractor.predict(X_test_3D)
 
 # Check how many LSTM features are completely useless (constant zeros)
 zero_variance_cols = np.sum(np.var(lstm_features_train, axis=0) == 0)
-print(f"Number of dead/constant LSTM features: {zero_variance_cols} out of 32")
+print(f"Number of dead/constant LSTM features: {zero_variance_cols} out of 16")
 
 # Check if the LSTM predictions themselves have any correlation to the target
 for i in range(5): # Check the first 5 LSTM features
@@ -200,12 +221,15 @@ for i in range(5): # Check the first 5 LSTM features
 # ENHANCEMENT: Combine the LSTM's temporal memory with Today's static indicators
 # We take the very last day (index -1) from our 10-day window to give XGBoost today's exact RSI/MACD
 today_features_train = X_train_3D[:, -1, :]
+today_features_val = X_val_3D[:, -1, :]
 today_features_test = X_test_3D[:, -1, :]
 
-X_train_hybrid = lstm_features_train
-X_test_hybrid = lstm_features_test
-# X_train_hybrid = np.concatenate([lstm_features_train, today_features_train], axis=1)
-# X_test_hybrid = np.concatenate([lstm_features_test, today_features_test], axis=1)
+# X_train_hybrid = lstm_features_train
+# X_val_hybrid = lstm_features_val
+# X_test_hybrid = lstm_features_test
+X_train_hybrid = np.concatenate([lstm_features_train, today_features_train], axis=1)
+X_val_hybrid = np.concatenate([lstm_features_val, today_features_val], axis=1)
+X_test_hybrid = np.concatenate([lstm_features_test, today_features_test], axis=1)
 
 print(f"LSTM Features Shape: {lstm_features_train.shape}")
 print(f"XGBoost Features Shape: {today_features_train.shape}")
@@ -221,19 +245,20 @@ xgb_model = xgb.XGBRegressor(
     min_child_weight=15,        # Forces leaves to have a minimum number of samples
     subsample=0.5,              # Only uses 50% of the rows per tree
     colsample_bytree=0.5,       # Only uses 50% of the columns per tree
-    reg_alpha=1.0,              # L1 Regularization (shrinks less important feature weights to 0)
-    reg_lambda=1.0,             # L2 Regularization (prevents weights from getting too large)
+    # reg_alpha=1.0,              # L1 Regularization (shrinks less important feature weights to 0)
+    # reg_lambda=1.0,             # L2 Regularization (prevents weights from getting too large)
     random_state=42,
     eval_metric=['rmse', 'mae'],
-    early_stopping_rounds=50    # Increased patience since the learning rate is smaller
+    early_stopping_rounds=30    # Increased patience since the learning rate is smaller
 )
 
 xgb_model.fit(X_train_hybrid, y_train_final,
-              eval_set=[(X_train_hybrid, y_train_final), (X_test_hybrid, y_test_final)],
+              eval_set=[(X_train_hybrid, y_train_final), (X_val_hybrid, y_val_final)],
               verbose=5)
 
 # Generate rmse and mae graph of model training
 plotting_helper.plot_xgboost_train_graph(xgb_model.evals_result(), "hybrid")
+plotting_helper.plot_feature_importance(xgb_model, feature_cols, [], "hybrid")
 
 print("\n=== PHASE 4: Final Evaluation ===")
 
@@ -251,17 +276,27 @@ directional_accuracy = np.mean(correct_direction) * 100
 ic, p_value = spearmanr(y_pred, y_test_final)
 
 # 3. Simulate a Trading Strategy for the Sharpe Ratio
-# Signal: +1 if predicted UP, -1 if predicted DOWN
-trading_signals = np.where(y_pred > 0, 1, -1)
+# We use percentiles to find the model's highest relative confidence setups
+upper_threshold = np.percentile(y_pred, 75)  # Top 25% most bullish predictions
+lower_threshold = np.percentile(y_pred, 25)  # Bottom 25% most bearish predictions
+
+# Signal: +1 if strong UP (and positive), -1 if strong DOWN (and negative), 0 (Cash)
+trading_signals = np.where((y_pred > upper_threshold) & (y_pred > 0), 1,
+                           np.where((y_pred < lower_threshold) & (y_pred < 0), -1, 0))
 
 # Strategy Return: Signal * Actual Daily Return
 strategy_returns = trading_signals * y_test_final
 
-# Annualize the returns and volatility (assuming 252 trading days in a year)
+# Calculate how often the model actually took a trade vs holding cash
+time_in_market = np.mean(trading_signals != 0) * 100
+
+# Annualize the returns and volatility dynamically based on days_forward
+periods_per_year = 252 / days_forward
+
 # We assume a risk-free rate of 0% for this basic simulation
 if np.std(strategy_returns) != 0:
-    annualized_return = np.mean(strategy_returns) * 252
-    annualized_volatility = np.std(strategy_returns) * np.sqrt(252)
+    annualized_return = np.mean(strategy_returns) * periods_per_year
+    annualized_volatility = np.std(strategy_returns) * np.sqrt(periods_per_year)
     sharpe_ratio = annualized_return / annualized_volatility
 else:
     annualized_return = 0.0
@@ -278,6 +313,9 @@ print(f"Directional Accuracy (Hit Rate): {directional_accuracy:.2f}%")
 print(f"Information Coefficient (IC): {ic:.4f} (p-value: {p_value:.4f})")
 
 print("\n--- Simulated Portfolio Performance ---")
+print(f"Dynamic Long Threshold : > {upper_threshold * 100:.2f}%")
+print(f"Dynamic Short Threshold: < {lower_threshold * 100:.2f}%")
+print(f"Time in Market: {time_in_market:.2f}%")
 print(f"Annualized Return: {annualized_return * 100:.2f}%")
 print(f"Annualized Volatility: {annualized_volatility * 100:.2f}%")
 print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
@@ -287,7 +325,17 @@ print("\nSample Predictions vs Actual Returns:")
 for i in range(5):
     actual_pct = y_test_final[i] * 100
     pred_pct = y_pred[i] * 100
-    print(f"Day {i+1}: Actual: {actual_pct:+.2f}%  |  Predicted: {pred_pct:+.2f}%")
+
+    if trading_signals[i] > 0:
+        signal = "LONG "
+    elif trading_signals[i] < 0:
+        signal = "SHORT"
+    else:
+        signal = "CASH "
+
+    profit = strategy_returns[i] * 100
+    print(
+        f"Day {i + 1} | Signal: {signal} | Pred: {pred_pct:+.2f}% | Actual: {actual_pct:+.2f}% | Profit: {profit:+.2f}%")
 
 print("\n=== PHASE 5: Plotting Results ===")
 
@@ -304,54 +352,77 @@ for i, ticker_col in enumerate(ticker_cols):
 
     # 1. Isolate the specific stock's dataframe
     stock_train_df = train_df[train_df[ticker_col] == 1]
+    stock_val_df = val_df[val_df[ticker_col] == 1]
     stock_test_df = test_df[test_df[ticker_col] == 1]
 
     # 2. Create the 3D Sequences (Crucial to match training lengths and shapes)
     # We pass [ticker_col] so the function only iterates over this specific stock
     X_train_3D_stock, y_train_actual = create_sequences_multi(stock_train_df, feature_cols, lookback_days, [ticker_col])
+    X_val_3D_stock, y_val_actual = create_sequences_multi(stock_val_df, feature_cols, lookback_days, [ticker_col])
     X_test_3D_stock, y_test_actual = create_sequences_multi(stock_test_df, feature_cols, lookback_days, [ticker_col])
 
     # 3. Push sequences through the LSTM Feature Extractor
     lstm_feat_train_stock = feature_extractor.predict(X_train_3D_stock, verbose=0)
+    lstm_feat_val_stock = feature_extractor.predict(X_val_3D_stock, verbose=0)
     lstm_feat_test_stock = feature_extractor.predict(X_test_3D_stock, verbose=0)
 
     # Note: If you uncomment the concatenation code in Phase 2 later,
     # make sure to also concatenate `today_features` here!
-    X_train_hybrid_stock = lstm_feat_train_stock
-    X_test_hybrid_stock = lstm_feat_test_stock
+    # X_train_hybrid_stock = lstm_feat_train_stock
+    # X_val_hybrid_stock = lstm_feat_val_stock
+    # X_test_hybrid_stock = lstm_feat_test_stock
+    X_train_hybrid_stock = np.concatenate([lstm_feat_train_stock, X_train_3D_stock[:, -1, :]], axis=1)
+    X_val_hybrid_stock = np.concatenate([lstm_feat_val_stock, X_val_3D_stock[:, -1, :]], axis=1)
+    X_test_hybrid_stock = np.concatenate([lstm_feat_test_stock, X_test_3D_stock[:, -1, :]], axis=1)
 
     # 4. Predict using XGBoost on the correct hybrid features
     y_train_pred = xgb_model.predict(X_train_hybrid_stock)
+    y_val_pred = xgb_model.predict(X_val_hybrid_stock)
     y_test_pred = xgb_model.predict(X_test_hybrid_stock)
 
     # 5. Extract corresponding dates (skipping the lookback window)
     stock_train_dates = stock_train_df.index[lookback_days:]
+    stock_val_dates = stock_val_df.index[lookback_days:]
     stock_test_dates = stock_test_df.index[lookback_days:]
 
     # 6. Extract exact dates for the BASE day (Today)
     # We shift backwards by days_forward (1) to get the day the prediction was made FROM
-    base_train_dates = stock_train_df.index[lookback_days - days_forward: -days_forward]
-    base_test_dates = stock_test_df.index[lookback_days - days_forward: -days_forward]
+    # base_train_dates = stock_train_df.index[lookback_days - days_forward: -days_forward]
+    # base_test_dates = stock_test_df.index[lookback_days - days_forward: -days_forward]
 
     # 7. Fetch the ACTUAL Prices
     # Actual Price on Target Day (Ground Truth)
-    y_train_actual_price = stock_train_df['Close'].loc[stock_train_dates].values
-    y_test_actual_price = stock_test_df['Close'].loc[stock_test_dates].values
+    # y_train_actual_price = stock_train_df['Close'].loc[stock_train_dates].values
+    # y_val_actual_price = stock_val_df['Close'].loc[stock_val_dates].values
+    # y_test_actual_price = stock_test_df['Close'].loc[stock_test_dates].values
 
     # Actual Price on Base Day (Used to calculate predicted price)
-    base_train_price = stock_train_df['Close'].loc[base_train_dates].values
-    base_test_price = stock_test_df['Close'].loc[base_test_dates].values
+    base_train_price = stock_train_df['Close'].loc[stock_train_dates].values
+    base_val_price = stock_val_df['Close'].loc[stock_val_dates].values
+    base_test_price = stock_test_df['Close'].loc[stock_test_dates].values
 
     # 8. Convert predicted returns to predicted PRICES
     # Math: Predicted Price = Today's Actual Price * (1 + Predicted Return)
+    # y_train_pred_price = base_train_price * (1 + y_train_pred)
+    # y_test_pred_price = base_test_price * (1 + y_test_pred)
+
+    y_train_actual_price = base_train_price * (1 + y_train_actual)
+    y_val_actual_price = base_val_price * (1 + y_val_actual)
+    y_test_actual_price = base_test_price * (1 + y_test_actual)
+
     y_train_pred_price = base_train_price * (1 + y_train_pred)
+    y_val_pred_price = base_val_price * (1 + y_val_pred)
     y_test_pred_price = base_test_price * (1 + y_test_pred)
 
     # 9. Plot Training Data (Faint/Transparent)
     plt.plot(stock_train_dates, y_train_actual_price, color=color, alpha=0.5)
     plt.plot(stock_train_dates, y_train_pred_price, color=color, alpha=0.5, linestyle=':')
 
-    # 10. Plot Testing Data (Bold)
+    # 10. Plot Validation Data (Faint/Transparent)
+    plt.plot(stock_val_dates, y_val_actual_price, color=color, alpha=0.5)
+    plt.plot(stock_val_dates, y_val_pred_price, color=color, alpha=0.5, linestyle=':')
+
+    # 11. Plot Testing Data (Bold)
     plt.plot(stock_test_dates, y_test_actual_price, color=color, alpha=0.9, label=f'{stock_name} Actual')
     plt.plot(stock_test_dates, y_test_pred_price, color=color, alpha=0.9, linestyle='--', label=f'{stock_name} Predicted')
 
@@ -380,7 +451,7 @@ plt.gca().text(0.02, 0.96, metrics_text, transform=plt.gca().transAxes,
                fontsize=12, verticalalignment='top', bbox=props)
 
 # Format the Graph
-plt.title(f'Multi-Stock Ground Truth vs Predicted {days_forward}-Day Forward Returns (LSTM-XGB Hybrid)', fontsize=18, fontweight='bold')
+plt.title(f'Multi-Stock Ground Truth vs Predicted {days_forward}-Day Forward (LSTM-XGB Hybrid)', fontsize=18, fontweight='bold')
 plt.xlabel('Date', fontsize=12)
 plt.ylabel(f'Cumulative {days_forward}-Day Return', fontsize=12)
 

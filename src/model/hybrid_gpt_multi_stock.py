@@ -3,16 +3,17 @@ import random
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import xgboost as xgb
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime
 from tensorflow.keras.metrics import RootMeanSquaredError
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.layers import Input, LSTM, Dense, Dropout, BatchNormalization
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, mean_absolute_percentage_error
 from sklearn.preprocessing import StandardScaler, RobustScaler
-from scipy.stats import spearmanr
+from scipy.stats import pearsonr, spearmanr
 
 from src.database import market_data_repo
 from src.helper import df_helper, plotting_helper
@@ -27,7 +28,7 @@ np.random.seed(42)
 tf.random.set_seed(42)
 
 # Load the CSV
-df = pd.read_csv("../../data/yf_merged_market_data.csv", index_col="Date", parse_dates=True)
+df = pd.read_csv("../../data/merged_gpt_market_data.csv", index_col="Date", parse_dates=True)
 # df = market_data_repo.retrieve_by_ticker("NVDA")
 df_helper.eda(df)
 
@@ -48,6 +49,21 @@ df_clean = df.dropna(subset=["Target_Forward_Return"]).copy()
 
 # Feature engineering to generate stationary features from non-stationary features
 df_clean = df_helper.generate_stationary_features_multi(df_clean)
+
+# --- ADVANCED LLM SENTIMENT ENGINEERING ---
+# 1. Baseline Memory (EWMA) of the LLM Score
+df_clean["llm_ewma_5"] = df_clean.groupby('ticker')["llm_score"].transform(
+    lambda x: x.ewm(span=5, min_periods=1).mean()
+)
+
+# 2. Volume-Weighted Impact
+df_clean["llm_sentiment_impact"] = df_clean["llm_score"] * np.log1p(df_clean["news_count"])
+
+# 3. The "Surprise" Factor (Delta between Today and the 5-Day Trend)
+df_clean["llm_sentiment_delta"] = df_clean["llm_score"] - df_clean["llm_ewma_5"]
+
+# Fill any residual NaNs created by rolling windows
+df_clean.fillna(0, inplace=True)
 
 # One-hot encode the ticker to convert text into numeric labels
 df_clean = pd.get_dummies(df_clean, columns=['ticker'], dtype=int)
@@ -74,29 +90,35 @@ feature_cols = [
     "Log_Volume_Change",
     # "Relative_Volume_20",
 ]
+llm_cols = [
+    # "llm_positive",
+    # "llm_negative",
+    # "llm_neutral",
+    # "llm_confidence",
+    "llm_score",
+    "llm_relevance",
+    "llm_impact_magnitude",
+    "llm_uncertainty",
+    "news_count",
+    "llm_ewma_5",
+    "llm_sentiment_impact",
+    "llm_sentiment_delta",
+]
 
 # Add one-hot encoded ticker columns to our feature list
 ticker_cols = [col for col in df_clean.columns if col.startswith('ticker_')]
 feature_cols.extend(ticker_cols)
+# feature_cols.extend(llm_cols)
 
 df_clean.sort_index(inplace=True) # Sort chronologically for the global split
 
 # Let's assume your model looks back at the past 20 trading days to predict tomorrow
 lookback_days = 20
 
-# Global Temporal Train/Test Split
+# Global Temporal Train/Validation/Test Split
 # We split by unique dates to ensure the test set is purely in the future
 unique_dates = df_clean.index.unique()
-# split_idx = int(len(unique_dates) * 0.9)
-# split_date = unique_dates[split_idx]
-# To fill up the gap between training and testing set due to the lookback windows, we add a warmup period for testing set
-# warmup_date = unique_dates[split_idx - lookback_days]
-#
-# train_df = df_clean[df_clean.index < split_date].copy()
-# test_df = df_clean[df_clean.index >= warmup_date].copy()
-# print(f"\nTrain date range: {train_df.index.min()} to {train_df.index.max()}")
-# print(f"Test date range : {test_df.index.min()} to {test_df.index.max()}")
-
+# To fill up the gap between training, validation and testing set due to the lookback windows, we add a warmup period
 train_idx = int(len(unique_dates) * 0.8)
 val_idx = int(len(unique_dates) * 0.9)
 train_end_date = unique_dates[train_idx]
@@ -125,8 +147,8 @@ train_df[continuous_features] = scaler.fit_transform(train_df[continuous_feature
 val_df[continuous_features] = scaler.transform(val_df[continuous_features])
 test_df[continuous_features] = scaler.transform(test_df[continuous_features])
 
-def create_sequences_multi(df_subset, features_list, lookback, ticker_columns):
-    X_seq, y_seq = [], []
+def create_sequences_multi(df_subset, features_list, finbert_list, lookback, ticker_columns):
+    X_seq, y_seq, X_finbert = [], [], []
 
     # Create LSTM sequences without crossing ticker boundaries.
     for ticker_col in ticker_columns:
@@ -135,17 +157,20 @@ def create_sequences_multi(df_subset, features_list, lookback, ticker_columns):
 
         features = stock_group[features_list].values
         targets = stock_group["Target_Forward_Return"].values
+        finbert = stock_group[finbert_list].values # Fetch text data for this specific stock
 
         for i in range(len(features) - lookback):
             X_seq.append(features[i: (i + lookback)])
             y_seq.append(targets[i + lookback])
+            # Today's news is the exact day the prediction is made from (end of the sequence)
+            X_finbert.append(finbert[i + lookback - 1])
 
-    return np.array(X_seq), np.array(y_seq)
+    return np.array(X_seq), np.array(y_seq), np.array(X_finbert)
 
 # Create sequences separately to ensure train/test don't bleed into each other during windowing
-X_train_3D, y_train_final = create_sequences_multi(train_df, feature_cols, lookback_days, ticker_cols)
-X_val_3D, y_val_final = create_sequences_multi(val_df, feature_cols, lookback_days, ticker_cols)
-X_test_3D, y_test_final = create_sequences_multi(test_df, feature_cols, lookback_days, ticker_cols)
+X_train_3D, y_train_final, today_news_train = create_sequences_multi(train_df, feature_cols, llm_cols, lookback_days, ticker_cols)
+X_val_3D, y_val_final, today_news_val = create_sequences_multi(val_df, feature_cols, llm_cols, lookback_days, ticker_cols)
+X_test_3D, y_test_final, today_news_test = create_sequences_multi(test_df, feature_cols, llm_cols, lookback_days, ticker_cols)
 
 # Verify Shapes
 print("\n--- DATA PREPARATION COMPLETE ---")
@@ -176,7 +201,7 @@ lstm_model = Sequential([
     BatchNormalization(),
 
     # Layer 3: Dense feature mapping
-    Dense(16, activation='relu'),
+    Dense(16, activation='relu', name='feature_mapping'),
 
     # Final Output
     Dense(1, activation='linear')
@@ -188,7 +213,7 @@ lstm_model.summary()
 # Train with Early Stopping (Stops training if the test set starts getting worse)
 early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
 
-history = lstm_model.fit(
+lstm_model.fit(
     X_train_3D, y_train_final,
     validation_data=(X_val_3D, y_val_final),
     epochs=100,
@@ -197,13 +222,72 @@ history = lstm_model.fit(
     verbose=1
 )
 
-# Generate loss and mae graph of model training
-plotting_helper.plot_lstm_train_graph(history)
+print("\n=== PHASE 2: Bridging LSTM to XGBoost ===")
 
-print("\n=== PHASE 2: Final Evaluation ===")
+# Create a LSTM model that stops at the 'feature_mapping' layer (last hidden layer)
+feature_extractor = Model(inputs=lstm_model.inputs, outputs=lstm_model.get_layer('feature_mapping').output)
+
+# Extract the 32-dimensional temporal memory for every sample
+lstm_features_train = feature_extractor.predict(X_train_3D)
+lstm_features_val = feature_extractor.predict(X_val_3D)
+lstm_features_test = feature_extractor.predict(X_test_3D)
+
+# Check how many LSTM features are completely useless (constant zeros)
+zero_variance_cols = np.sum(np.var(lstm_features_train, axis=0) == 0)
+print(f"Number of dead/constant LSTM features: {zero_variance_cols} out of 16")
+
+# Check if the LSTM predictions themselves have any correlation to the target
+for i in range(5): # Check the first 5 LSTM features
+    corr, _ = pearsonr(lstm_features_train[:, i], y_train_final)
+    print(f"LSTM Feature {i} correlation to Target: {corr:.4f}")
+
+# ENHANCEMENT: Combine the LSTM's temporal memory with Today's static indicators
+# We take the very last day (index -1) from our 10-day window to give XGBoost today's exact RSI/MACD
+today_tech_train = X_train_3D[:, -1, :]
+today_tech_val = X_val_3D[:, -1, :]
+today_tech_test = X_test_3D[:, -1, :]
+
+# X_train_hybrid = lstm_features_train
+# X_val_hybrid = lstm_features_val
+# X_test_hybrid = lstm_features_test
+X_train_hybrid = np.concatenate([lstm_features_train, today_tech_train, today_news_train], axis=1)
+X_val_hybrid = np.concatenate([lstm_features_val, today_tech_val, today_news_val], axis=1)
+X_test_hybrid = np.concatenate([lstm_features_test, today_tech_test, today_news_test], axis=1)
+
+print(f"LSTM Features Shape: {lstm_features_train.shape}")
+print(f"XGBoost Features Shape: {today_tech_train.shape}")
+print(f"Sentiment Features Shape: {today_news_train.shape}")
+print(f"Hybrid Train Matrix Shape: {X_train_hybrid.shape}") # Should be (Samples, 32 + Original Features)
+
+print("\n=== PHASE 3: Training the XGBoost Meta-Model ===")
+
+# Train the XGBoost model on the combined feature set
+xgb_model = xgb.XGBRegressor(
+    n_estimators=1000,          # Increased to allow for the smaller learning rate
+    learning_rate=0.01,         # Much slower, more cautious learning
+    max_depth=3,                # Shallower trees to prevent memorizing complex, noisy patterns
+    min_child_weight=15,        # Forces leaves to have a minimum number of samples
+    subsample=0.5,              # Only uses 50% of the rows per tree
+    colsample_bytree=0.5,       # Only uses 50% of the columns per tree
+    reg_alpha=0.1,              # L1 Regularization (shrinks less important feature weights to 0)
+    reg_lambda=2.0,             # L2 Regularization (prevents weights from getting too large)
+    random_state=42,
+    eval_metric=['rmse', 'mae'],
+    early_stopping_rounds=30    # Increased patience since the learning rate is smaller
+)
+
+xgb_model.fit(X_train_hybrid, y_train_final,
+              eval_set=[(X_train_hybrid, y_train_final), (X_val_hybrid, y_val_final)],
+              verbose=5)
+
+# Generate rmse and mae graph of model training
+plotting_helper.plot_xgboost_train_graph(xgb_model.evals_result(), "hybrid_llm")
+plotting_helper.plot_feature_importance(xgb_model, feature_cols, llm_cols, "hybrid_llm")
+
+print("\n=== PHASE 4: Final Evaluation ===")
 
 # Make predictions
-y_pred = lstm_model.predict(X_test_3D).flatten()
+y_pred = xgb_model.predict(X_test_hybrid)
 
 # 1. Standard Regression Metrics
 mae = mean_absolute_error(y_test_final, y_pred)
@@ -216,6 +300,49 @@ directional_accuracy = np.mean(correct_direction) * 100
 ic, p_value = spearmanr(y_pred, y_test_final)
 
 # 3. Simulate a Trading Strategy for the Sharpe Ratio
+# percentiles_to_test = [70, 75, 80, 85, 90, 95]
+# best_sharpe = 0
+# best_metrics = {}
+#
+# for p in percentiles_to_test:
+#     upper_pct = p
+#     lower_pct = 100 - p
+#
+#     upper_threshold = np.percentile(y_pred, upper_pct)
+#     lower_threshold = np.percentile(y_pred, lower_pct)
+#
+#     # Signal: +1 (LONG), -1 (SHORT), 0 (CASH)
+#     trading_signals = np.where((y_pred > upper_threshold) & (y_pred > 0), 1,
+#                                np.where((y_pred < lower_threshold) & (y_pred < 0), -1, 0))
+#
+#     strategy_returns = trading_signals * y_test_final
+#     time_in_market = np.mean(trading_signals != 0) * 100
+#
+#     periods_per_year = 252 / days_forward
+#
+#     if np.std(strategy_returns) != 0:
+#         annualized_return = np.mean(strategy_returns) * periods_per_year
+#         annualized_volatility = np.std(strategy_returns) * np.sqrt(periods_per_year)
+#         sharpe_ratio = annualized_return / annualized_volatility
+#     else:
+#         annualized_return, annualized_volatility, sharpe_ratio = 0.0, 0.0, 0.0
+#
+#     print(
+#         f"Top {100 - p:02d}% Snipe | Exposure: {time_in_market:05.2f}% | Ann. Ret: {annualized_return * 100:05.2f}% | Vol: {annualized_volatility * 100:05.2f}% | Sharpe: {sharpe_ratio:.2f}")
+#
+#     if sharpe_ratio > best_sharpe:
+#         best_sharpe = sharpe_ratio
+#         best_metrics = {
+#             "top_pct": 100 - p,
+#             "ret": annualized_return,
+#             "vol": annualized_volatility,
+#             "sharpe": sharpe_ratio
+#         }
+#
+# print("\n--- OPTIMAL STRATEGY ---")
+# print(f"Best Configuration: Trading only the Top {best_metrics['top_pct']}% of setups.")
+# print(f"Max Sharpe Ratio: {best_metrics['sharpe']:.2f}")
+
 # We use percentiles to find the model's highest relative confidence setups
 upper_threshold = np.percentile(y_pred, 75)  # Top 25% most bullish predictions
 lower_threshold = np.percentile(y_pred, 25)  # Bottom 25% most bearish predictions
@@ -223,9 +350,16 @@ lower_threshold = np.percentile(y_pred, 25)  # Bottom 25% most bearish predictio
 # Signal: +1 if strong UP (and positive), -1 if strong DOWN (and negative), 0 (Cash)
 trading_signals = np.where((y_pred > upper_threshold) & (y_pred > 0), 1,
                            np.where((y_pred < lower_threshold) & (y_pred < 0), -1, 0))
+# trading_signals = np.where((y_pred > upper_threshold) & (y_pred > 0), 1, 0)
 
 # Strategy Return: Signal * Actual Daily Return
-strategy_returns = trading_signals * y_test_final
+raw_strategy_returns = trading_signals * y_test_final
+
+# --- SIMULATED RISK MANAGEMENT (STOP-LOSS) ---
+# If a trade goes against us by more than 3%, we assume the stop-loss order
+# triggered intraday, capping our maximum possible loss on any single trade to -3%.
+stop_loss_limit = -0.03
+strategy_returns = np.where(raw_strategy_returns < stop_loss_limit, stop_loss_limit, raw_strategy_returns)
 
 # Calculate how often the model actually took a trade vs holding cash
 time_in_market = np.mean(trading_signals != 0) * 100
@@ -277,62 +411,60 @@ for i in range(5):
     print(
         f"Day {i + 1} | Signal: {signal} | Pred: {pred_pct:+.2f}% | Actual: {actual_pct:+.2f}% | Profit: {profit:+.2f}%")
 
-print("\n=== PHASE 5: Plotting Results (All Stocks) ===")
+print("\n=== PHASE 5: Plotting Results ===")
 
+# Create the plot
 plt.figure(figsize=(18, 10))
 
 # Define a distinct color map for up to 5 stocks (Standard Matplotlib Tableau Colors)
 colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
 
-# 2. Loop through each one-hot column
+# Loop through each one-hot column
 for i, ticker_col in enumerate(ticker_cols):
-    # Strip the prefix to get the clean stock name for the legend (e.g., 'ticker_NVDA' -> 'NVDA')
     stock_name = ticker_col.replace('ticker_', '')
     color = colors[i % len(colors)]
 
-    # 3. Filter the dataframe where this specific stock is '1'
+    # 1. Isolate the specific stock's dataframe
     stock_train_df = train_df[train_df[ticker_col] == 1]
     stock_val_df = val_df[val_df[ticker_col] == 1]
     stock_test_df = test_df[test_df[ticker_col] == 1]
 
-    # 4. Generate sequences specifically for this stock
-    # Your one-hot create_sequences_multi will handle this perfectly
-    X_train_stock, y_train_actual = create_sequences_multi(stock_train_df, feature_cols, lookback_days, [ticker_col])
-    X_val_stock, y_val_actual = create_sequences_multi(stock_val_df, feature_cols, lookback_days, [ticker_col])
-    X_test_stock, y_test_actual = create_sequences_multi(stock_test_df, feature_cols, lookback_days, [ticker_col])
+    # 2. Create the 3D Sequences (Crucial to match training lengths and shapes)
+    # We pass [ticker_col] so the function only iterates over this specific stock
+    X_train_3D_stock, y_train_actual, today_news_train_stock = create_sequences_multi(stock_train_df, feature_cols, llm_cols, lookback_days, [ticker_col])
+    X_val_3D_stock, y_val_actual, today_news_val_stock = create_sequences_multi(stock_val_df, feature_cols, llm_cols, lookback_days, [ticker_col])
+    X_test_3D_stock, y_test_actual, today_news_test_stock = create_sequences_multi(stock_test_df, feature_cols, llm_cols, lookback_days, [ticker_col])
 
-    # 5. Generate predictions
-    y_train_pred = lstm_model.predict(X_train_stock, verbose=0).flatten()
-    y_val_pred = lstm_model.predict(X_val_stock, verbose=0).flatten()
-    y_test_pred = lstm_model.predict(X_test_stock, verbose=0).flatten()
+    # 3. Push sequences through the LSTM Feature Extractor
+    lstm_feat_train_stock = feature_extractor.predict(X_train_3D_stock, verbose=0)
+    lstm_feat_val_stock = feature_extractor.predict(X_val_3D_stock, verbose=0)
+    lstm_feat_test_stock = feature_extractor.predict(X_test_3D_stock, verbose=0)
 
-    # 6. Extract corresponding dates
-    train_dates = pd.to_datetime(stock_train_df.index)[lookback_days:]
-    val_dates = pd.to_datetime(stock_val_df.index)[lookback_days:]
-    test_dates = pd.to_datetime(stock_test_df.index)[lookback_days:]
+    # Note: If you uncomment the concatenation code in Phase 2 later,
+    # make sure to also concatenate `today_features` here!
+    # X_train_hybrid_stock = lstm_feat_train_stock
+    # X_val_hybrid_stock = lstm_feat_val_stock
+    # X_test_hybrid_stock = lstm_feat_test_stock
+    X_train_hybrid_stock = np.concatenate([lstm_feat_train_stock, X_train_3D_stock[:, -1, :], today_news_train_stock], axis=1)
+    X_val_hybrid_stock = np.concatenate([lstm_feat_val_stock, X_val_3D_stock[:, -1, :], today_news_val_stock], axis=1)
+    X_test_hybrid_stock = np.concatenate([lstm_feat_test_stock, X_test_3D_stock[:, -1, :], today_news_test_stock], axis=1)
 
-    # 7. Extract exact dates for the BASE day (Today)
-    # We shift backwards by days_forward (1) to get the day the prediction was made FROM
-    # base_train_dates = stock_train_df.index[lookback_days - days_forward: -days_forward]
-    # base_val_dates = stock_val_df.index[lookback_days - days_forward: -days_forward]
-    # base_test_dates = stock_test_df.index[lookback_days - days_forward: -days_forward]
+    # 4. Predict using XGBoost on the correct hybrid features
+    y_train_pred = xgb_model.predict(X_train_hybrid_stock)
+    y_val_pred = xgb_model.predict(X_val_hybrid_stock)
+    y_test_pred = xgb_model.predict(X_test_hybrid_stock)
 
-    # 8. Fetch the ACTUAL Prices
-    # Actual Price on Target Day (Ground Truth)
-    # y_train_actual_price = stock_train_df['Close'].loc[train_dates].values
-    # y_val_actual_price = stock_val_df['Close'].loc[val_dates].values
-    # y_test_actual_price = stock_test_df['Close'].loc[test_dates].values
+    # 5. Extract corresponding dates (skipping the lookback window)
+    stock_train_dates = stock_train_df.index[lookback_days:]
+    stock_val_dates = stock_val_df.index[lookback_days:]
+    stock_test_dates = stock_test_df.index[lookback_days:]
 
     # Actual Price on Base Day (Used to calculate predicted price)
-    base_train_price = stock_train_df['Close'].loc[train_dates].values
-    base_val_price = stock_val_df['Close'].loc[val_dates].values
-    base_test_price = stock_test_df['Close'].loc[test_dates].values
+    base_train_price = stock_train_df['Close'].loc[stock_train_dates].values
+    base_val_price = stock_val_df['Close'].loc[stock_val_dates].values
+    base_test_price = stock_test_df['Close'].loc[stock_test_dates].values
 
-    # 9. Convert predicted returns to predicted PRICES
-    # Math: Predicted Price = Today's Actual Price * (1 + Predicted Return)
-    # y_train_pred_price = base_train_price * (1 + y_train_pred)
-    # y_test_pred_price = base_test_price * (1 + y_test_pred)
-
+    # 8. Convert predicted returns to predicted PRICES
     y_train_actual_price = base_train_price * (1 + y_train_actual)
     y_val_actual_price = base_val_price * (1 + y_val_actual)
     y_test_actual_price = base_test_price * (1 + y_test_actual)
@@ -341,24 +473,26 @@ for i, ticker_col in enumerate(ticker_cols):
     y_val_pred_price = base_val_price * (1 + y_val_pred)
     y_test_pred_price = base_test_price * (1 + y_test_pred)
 
-    # 7. Plot Training Data (Faint/Transparent)
-    plt.plot(train_dates, y_train_actual_price, color=color, alpha=0.5)
-    plt.plot(train_dates, y_train_pred_price, color=color, alpha=0.5, linestyle=':')
+    # 9. Plot Training Data (Faint/Transparent)
+    plt.plot(stock_train_dates, y_train_actual_price, color=color, alpha=0.5)
+    plt.plot(stock_train_dates, y_train_pred_price, color=color, alpha=0.5, linestyle=':')
 
     # 10. Plot Validation Data (Faint/Transparent)
-    plt.plot(val_dates, y_val_actual_price, color=color, alpha=0.5)
-    plt.plot(val_dates, y_val_pred_price, color=color, alpha=0.5, linestyle=':')
+    plt.plot(stock_val_dates, y_val_actual_price, color=color, alpha=0.5)
+    plt.plot(stock_val_dates, y_val_pred_price, color=color, alpha=0.5, linestyle=':')
 
-    # 8. Plot Testing Data (Bold)
-    plt.plot(test_dates, y_test_actual_price, color=color, alpha=0.9, label=f'{stock_name} Actual')
-    plt.plot(test_dates, y_test_pred_price, color=color, alpha=0.9, linestyle='--', label=f'{stock_name} Predicted')
+    # 11. Plot Testing Data (Bold)
+    plt.plot(stock_test_dates, y_test_actual_price, color=color, alpha=0.9, label=f'{stock_name} Actual')
+    plt.plot(stock_test_dates, y_test_pred_price, color=color, alpha=0.9, linestyle='--', label=f'{stock_name} Predicted')
 
 # Draw a vertical dashed line exactly where the testing period begins
-global_test_dates = pd.to_datetime(test_df.index.unique()).sort_values()
-first_prediction_date = global_test_dates[lookback_days]
-plt.axvline(x=first_prediction_date, color='black', linestyle='-.', linewidth=2, label='Train/Test Split')
+global_test_dates = test_df.index.unique().sort_values()
+if len(global_test_dates) > lookback_days:
+    # Skip the warmup days to find the true first prediction date
+    first_prediction_date = global_test_dates[lookback_days]
+    plt.axvline(x=first_prediction_date, color='black', linestyle='-.', linewidth=2, label='Train/Test Split')
 
-# Annotate Metrics (Ensure mae, rmse, r2 exist in your scope from Phase 2)
+# Annotate Metrics
 metrics_text = (
     f"Overall Test Metrics:\n"
     f"RMSE: {rmse:.4f}\n"
@@ -376,7 +510,7 @@ plt.gca().text(0.02, 0.96, metrics_text, transform=plt.gca().transAxes,
                fontsize=12, verticalalignment='top', bbox=props)
 
 # Format the Graph
-plt.title(f'Multi-Stock Ground Truth vs Predicted {days_forward}-Day Forward', fontsize=18, fontweight='bold')
+plt.title(f'Multi-Stock Ground Truth vs Predicted {days_forward}-Day Forward (LSTM-XGB Hybrid)', fontsize=18, fontweight='bold')
 plt.xlabel('Date', fontsize=12)
 plt.ylabel(f'Cumulative {days_forward}-Day Return', fontsize=12)
 
@@ -390,7 +524,8 @@ plt.grid(True, linestyle='--', alpha=0.5)
 
 plt.tight_layout()
 
-file_name = f"../../output/lstm_multi_prediction_{datetime.now().strftime('%Y%m%dT%H%M%S')}.png"
+# Show the plot
+file_name = f"../../output/hybrid_llm_multi_prediction_{datetime.now().strftime('%Y%m%dT%H%M%S')}.png"
 plt.savefig(file_name)
 plt.close()
-print("Saved prediction result to PNG")
+print(f"Saved prediction result to PNG")
